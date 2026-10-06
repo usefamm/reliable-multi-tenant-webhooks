@@ -25,6 +25,9 @@ coverage/
 .idea/
 .vscode/
 
+# Unrelated tooling runtime state
+.refact/
+
 # Docker volumes (local postgres data)
 docker/data/
 pgdata/
