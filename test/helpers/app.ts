@@ -14,5 +14,8 @@ export async function createTestApp(): Promise<INestApplication> {
   const app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
   configureHttp(app);
   await app.init();
+  // supertest attaches listeners per request; many requests against one server
+  // trip Node's default MaxListeners warning. Disable the cap for test servers.
+  app.getHttpServer().setMaxListeners(0);
   return app;
 }
