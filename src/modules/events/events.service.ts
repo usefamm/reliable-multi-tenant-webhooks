@@ -5,6 +5,11 @@ import { newUuid } from '../../common/ids';
 import { notFound } from '../../common/errors';
 import { buildEnvelope } from '../webhooks/envelope';
 import { DeliveryState } from '../../domain/types';
+import {
+  IdempotencyOperation,
+  IdempotencyService,
+  requestFingerprint,
+} from '../idempotency/idempotency.service';
 import type { PublishEventInput } from './dto';
 
 /** Result of a successful (or replayed) publication. */
@@ -34,6 +39,7 @@ export class EventsService {
   constructor(
     private readonly db: Database,
     private readonly clock: Clock,
+    private readonly idempotency: IdempotencyService,
   ) {}
 
   /**
@@ -57,14 +63,46 @@ export class EventsService {
   }
 
   /**
-   * Atomically create an event and its delivery. Returns the ids and the initial
-   * state. Idempotency (M5) wraps this within the same transaction.
+   * Atomically create an event and its delivery, guarded by publication
+   * idempotency.
+   *
+   * The idempotency fingerprint covers exactly the fields the PDF says must
+   * match for a replay: endpointId, eventType and payload. Canonical JSON makes
+   * object key order irrelevant while array order stays significant. The
+   * event + delivery insert AND the idempotency record insert happen in the SAME
+   * transaction, so:
+   *   - a successful publish commits both atomically;
+   *   - concurrent duplicates serialize on the UNIQUE(tenant, op, key) index and
+   *     losers roll back their duplicate rows, then replay the winner's response;
+   *   - a request that fails validation/ownership never writes a record, so it
+   *     does not consume the key.
    */
-  async publish(tenantId: string, input: PublishEventInput): Promise<PublishResult> {
-    return this.db.withTransaction(async (client) => {
-      await this.loadOwnedEndpoint(client, input.endpointId, tenantId);
-      return this.insertEventAndDelivery(client, tenantId, input);
+  async publish(
+    tenantId: string,
+    input: PublishEventInput,
+    idempotencyKey: string,
+  ): Promise<PublishResult> {
+    const requestHash = requestFingerprint({
+      endpointId: input.endpointId,
+      eventType: input.eventType,
+      payload: input.payload,
     });
+
+    const outcome = await this.idempotency.execute<PublishResult>(
+      {
+        tenantId,
+        operation: IdempotencyOperation.PUBLISH_EVENT,
+        key: idempotencyKey,
+        requestHash,
+      },
+      async (client) => {
+        await this.loadOwnedEndpoint(client, input.endpointId, tenantId);
+        const result = await this.insertEventAndDelivery(client, tenantId, input);
+        return { status: 202, body: result, resourceId: result.eventId };
+      },
+    );
+
+    return outcome.body;
   }
 
   /** Insert event + delivery inside an existing transaction client. */

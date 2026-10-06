@@ -22,7 +22,7 @@ export class EventsController {
     @Body() body: unknown,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
   ): Promise<PublishResult> {
-    // Idempotency-Key is required for publication (dedup semantics land in M5).
+    // Idempotency-Key is required: publication dedup is a core guarantee.
     if (!idempotencyKey || idempotencyKey.trim().length === 0) {
       throw badRequest('Idempotency-Key header is required');
     }
@@ -30,7 +30,7 @@ export class EventsController {
       throw badRequest('Idempotency-Key header is too long (max 200 characters)');
     }
     const input = parsePublishEventBody(body);
-    return this.events.publish(tenantIdOf(principal), input);
+    return this.events.publish(tenantIdOf(principal), input, idempotencyKey);
   }
 
   @Get('events/:id')
