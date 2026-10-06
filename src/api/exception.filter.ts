@@ -47,6 +47,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
     } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       body = { code: this.mapNestCode(status), message: this.safeMessage(exception, status), requestId };
+    } else if (this.isHttpErrorLike(exception)) {
+      // Errors raised by pre-route express middleware (notably the body parser):
+      // 413 entity.too.large, 400 entity.parse.failed. They carry status/type/expose.
+      const mapped = this.mapHttpErrorLike(exception);
+      status = mapped.status;
+      body = { code: mapped.code, message: mapped.message, requestId };
     } else {
       // Unknown error: log with correlation id, return a generic envelope.
       this.logger.error({ requestId, err: exception }, 'unhandled exception');
@@ -57,6 +63,35 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     res.status(status).json(body);
+  }
+
+  /** Shape of errors produced by `http-errors` / body-parser. */
+  private isHttpErrorLike(err: unknown): err is { status?: number; type?: string; expose?: boolean } {
+    return (
+      typeof err === 'object' &&
+      err !== null &&
+      (typeof (err as { status?: unknown }).status === 'number' ||
+        typeof (err as { type?: unknown }).type === 'string')
+    );
+  }
+
+  private mapHttpErrorLike(err: { status?: number; type?: string }): {
+    status: number;
+    code: string;
+    message: string;
+  } {
+    if (err.status === 413 || err.type === 'entity.too.large') {
+      return {
+        status: 413,
+        code: 'payload_too_large',
+        message: 'Request body exceeds the maximum allowed size',
+      };
+    }
+    if (err.type === 'entity.parse.failed') {
+      return { status: 400, code: 'bad_request', message: 'Malformed JSON body' };
+    }
+    const status = err.status ?? 500;
+    return { status, code: this.mapNestCode(status), message: 'Request could not be processed' };
   }
 
   private mapNestCode(status: number): string {

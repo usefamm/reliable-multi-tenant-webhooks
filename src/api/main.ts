@@ -5,18 +5,17 @@ loadEnvFile();
 
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { json } from 'express';
 import { AppModule } from './app.module';
 import { loadConfig } from '../config/env';
 import { createLogger } from '../common/logger';
-
-/** 64 KiB raw request body limit (PDF). Exceeding it yields 413 via express. */
-const MAX_BODY_BYTES = 64 * 1024;
+import { configureHttp } from './http-setup';
 
 /**
  * API server bootstrap. Config is validated first so the server never boots with
- * an invalid environment. Body parsing is limited to 64 KiB and the JSON parser
- * is applied by hand so the limit is explicit and enforced before any handler.
+ * an invalid environment. HTTP middleware ordering matters:
+ *   request-id -> body parser (64 KiB cap) -> Nest routes
+ * Body-parser errors (413/400) propagate into Nest's exception zone and are
+ * mapped to the standard error envelope by AllExceptionsFilter.
  */
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
@@ -27,9 +26,7 @@ async function bootstrap(): Promise<void> {
     bodyParser: false,
   });
 
-  app.use(json({ limit: MAX_BODY_BYTES }));
-  app.disable('x-powered-by');
-
+  configureHttp(app);
   await app.listen(config.API_PORT);
   logger.info({ port: config.API_PORT }, 'api listening');
 }
@@ -42,4 +39,4 @@ if (require.main === module) {
   });
 }
 
-export { bootstrap, MAX_BODY_BYTES };
+export { bootstrap };
