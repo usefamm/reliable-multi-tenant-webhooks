@@ -21,6 +21,14 @@ const EnvSchema = z.object({
 
   WEBHOOK_TIMEOUT_MS: z.coerce.number().int().positive().default(2_000),
   WEBHOOK_MAX_RESPONSE_BYTES: z.coerce.number().int().positive().default(4_096),
+  /**
+   * SSRF defence (deployment-owned, never caller-owned): when non-empty the
+   * worker only dispatches to endpoint URLs whose host:port appears in this
+   * list. Empty means "allow the configured endpoints table only" - which is
+   * already the only source of destinations; the list is the belt-and-braces
+   * network boundary recommended for production.
+   */
+  WEBHOOK_ALLOWED_HOSTS: z.string().default(''),
 
   RETRY_MAX_ATTEMPTS_PER_CYCLE: z.coerce.number().int().positive().default(5),
   RETRY_BACKOFF_BASE_MS: z.coerce.number().int().positive().default(1_000),
