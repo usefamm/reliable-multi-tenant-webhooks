@@ -19,6 +19,17 @@ export class Database {
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 5_000,
     });
+
+    // An idle client can error asynchronously (e.g. the server terminates the
+    // connection, or a network blip). Without a listener pg re-emits this as an
+    // unhandled 'error' and crashes the process. The pool discards the bad client
+    // and opens a fresh one on the next query, so swallowing here is safe.
+    this.pool.on('error', (err) => {
+      if (process.env.NODE_ENV !== 'test') {
+        // eslint-disable-next-line no-console
+        console.error('pg pool idle client error:', err.message);
+      }
+    });
   }
 
   static fromConfig(config: Pick<AppConfig, 'DATABASE_URL'>): Database {
