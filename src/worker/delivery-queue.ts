@@ -1,4 +1,3 @@
-import type { PoolClient } from 'pg';
 import type { Database } from '../db/pool';
 import type { Clock } from '../common/clock';
 import { newAttemptId, newUuid } from '../common/ids';
@@ -208,32 +207,5 @@ export class DeliveryQueue {
 
       return { applied: (rowCount ?? 0) > 0 };
     });
-  }
-
-  /**
-   * Release a lease without changing delivery state (used on graceful shutdown
-   * for work that was claimed but is being abandoned). The delivery returns to
-   * the pool via its next_attempt_at; another worker can claim it immediately.
-   * Fenced so it only affects a lease this worker still holds.
-   */
-  async releaseLease(
-    client: PoolClient | undefined,
-    deliveryId: string,
-    leaseOwner: string,
-    leaseGeneration: string,
-  ): Promise<void> {
-    const now = this.clock.now();
-    const sql = `UPDATE deliveries
-                    SET state = 'READY',
-                        lease_owner = NULL,
-                        lease_expires_at = NULL,
-                        updated_at = $4
-                  WHERE id = $1 AND lease_owner = $2 AND lease_generation = $3
-                    AND state = 'IN_FLIGHT'`;
-    if (client) {
-      await client.query(sql, [deliveryId, leaseOwner, leaseGeneration, now]);
-    } else {
-      await this.db.query(sql, [deliveryId, leaseOwner, leaseGeneration, now]);
-    }
   }
 }

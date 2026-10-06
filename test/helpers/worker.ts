@@ -110,6 +110,15 @@ export interface WorkerStack {
 }
 
 /**
+ * Build a DeliveryQueue bound to the same Database and FakeClock as a stack, so
+ * tests can simulate several independent workers sharing the durable queue and
+ * control lease timing deterministically.
+ */
+export function createQueue(stack: WorkerStack): DeliveryQueue {
+  return new DeliveryQueue(stack.db, stack.clock);
+}
+
+/**
  * Build a worker stack backed by the real test database and a fake clock/random
  * so lease timing and jitter are deterministic. The caller supplies the processor.
  */
