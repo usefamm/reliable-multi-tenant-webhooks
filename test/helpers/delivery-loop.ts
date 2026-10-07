@@ -52,6 +52,13 @@ export interface LoopOptions {
   leaseTtlMs?: number;
   pollIntervalMs?: number;
   shutdownGraceMs?: number;
+  /**
+   * Register the loop's endpoint at this URL instead of the mock receiver's.
+   * Used by the acceptance suites to dispatch at a raw capture endpoint that
+   * records the exact bytes and headers, while time and queue state stay
+   * observable through the same shared clock.
+   */
+  destinationUrl?: string;
 }
 
 export interface DeliveryLoop {
@@ -83,7 +90,7 @@ export interface DeliveryLoop {
 export async function startLoop(receiver: ReceiverApp, opts: LoopOptions = {}): Promise<DeliveryLoop> {
   const db = new Database(TEST_DATABASE_URL);
   const endpointId = newUuid();
-  const url = `http://127.0.0.1:${receiver.port}/hook/${endpointId}`;
+  const url = opts.destinationUrl ?? `http://127.0.0.1:${receiver.port}/hook/${endpointId}`;
   await db.query(
     `INSERT INTO endpoints (id, tenant_id, name, url, secret)
      VALUES ($1,$2,$3,$4,$5)`,

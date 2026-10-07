@@ -21,7 +21,7 @@
     "test": "jest --runInBand",
     "test:unit": "jest --runInBand --testPathPattern test/unit",
     "test:integration": "jest --runInBand --testPathPattern test/integration",
-    "test:failure": "jest --runInBand --testPathPattern test/failure"
+    "test:acceptance": "jest --runInBand --testPathPattern test/acceptance"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",

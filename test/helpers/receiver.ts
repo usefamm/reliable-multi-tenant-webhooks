@@ -63,6 +63,13 @@ export async function startReceiver(opts: {
   timestampToleranceSec?: number;
   maxBodyBytes?: number;
   testControls?: boolean;
+  /**
+   * Bind this exact port. A restart then answers on the same address the sender
+   * already has configured - which is how a container restart behaves behind
+   * stable service DNS, and what lets a test prove the new process deduplicates
+   * against the database rather than against memory.
+   */
+  port?: number;
 }): Promise<ReceiverApp> {
   const db = new Database(opts.databaseUrl);
   const repo = new ReceiverRepository(db);
@@ -77,8 +84,10 @@ export async function startReceiver(opts: {
     void handler(req, res);
   });
   server.setMaxListeners(0);
-  const port = await new Promise<number>((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
+  const port = await new Promise<number>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(opts.port ?? 0, '127.0.0.1', () => {
+      server.removeListener('error', reject);
       const address = server.address();
       resolve(typeof address === 'object' && address ? address.port : 0);
     });

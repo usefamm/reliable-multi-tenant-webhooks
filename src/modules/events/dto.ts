@@ -9,19 +9,26 @@ import { isUuid } from '../../common/ids';
  * The raw body size (<= 64 KiB) is enforced by the express JSON parser (-> 413)
  * before this schema runs, so a too-large body never reaches validation.
  */
-export const PublishEventSchema = z.object({
-  endpointId: z
-    .string()
-    .refine(isUuid, { message: 'endpointId must be a valid UUID' }),
-  eventType: z
-    .string()
-    .min(1, 'eventType must be a non-empty string')
-    .max(100, 'eventType must be at most 100 characters'),
-  payload: z
-    .object({})
-    .passthrough()
-    .refine((v) => !Array.isArray(v), { message: 'payload must be a JSON object' }),
-});
+export const PublishEventSchema = z
+  .object({
+    endpointId: z
+      .string()
+      .refine(isUuid, { message: 'endpointId must be a valid UUID' }),
+    eventType: z
+      .string()
+      .min(1, 'eventType must be a non-empty string')
+      .max(100, 'eventType must be at most 100 characters'),
+    payload: z
+      .object({})
+      .passthrough()
+      .refine((v) => !Array.isArray(v), { message: 'payload must be a JSON object' }),
+  })
+  // The top-level contract is closed: an unrecognised field is a mistake, not
+  // something to ignore. Silently dropping a caller's `url` or `secret` would
+  // let them believe they had steered the destination; rejecting it says the
+  // destination comes from the endpoints table and nowhere else. `payload`
+  // stays open because customer business data is arbitrary by definition.
+  .strict();
 
 export type PublishEventInput = z.infer<typeof PublishEventSchema>;
 

@@ -11,14 +11,17 @@ const SUCCESS: DeliveryAttemptResult = {
 };
 
 /**
- * PDF acceptance TEST 8: stale worker fencing.
+ * PDF acceptance TEST 7: stale worker fencing.
  *
  * A deterministic simulation of "Worker A claims; A pauses beyond its lease;
  * Worker B recovers and claims; B progresses; A resumes": the fake clock is the
  * pause, and A's late completion must be fenced out by
  * (lease_owner, lease_generation).
+ *
+ * test/acceptance/t7-stale-worker.spec.ts is the end-to-end counterpart: same
+ * interleaving, but with real HTTP dispatch and a real receiver effect count.
  */
-describe('M8 stale worker fencing (PDF test 8)', () => {
+describe('M8 stale worker fencing (PDF test 7)', () => {
   let stack: WorkerStack;
 
   beforeAll(() => {
