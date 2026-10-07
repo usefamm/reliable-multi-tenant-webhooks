@@ -69,6 +69,10 @@ export function createReceiverHandler(repo: ReceiverRepository, clock: Clock, co
   }
 
   async function handleWebhook(req: IncomingMessage, res: ServerResponse, endpointId: string): Promise<void> {
+    // Senders hang up constantly in this domain (timeouts, lost responses). An
+    // 'error' event on the response with no listener would crash the receiver,
+    // and the effect would then be lost mid-flight.
+    res.on('error', () => {});
     let body: Buffer;
     try {
       body = await readBody(req, config.maxBodyBytes);

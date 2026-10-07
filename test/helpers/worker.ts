@@ -23,7 +23,7 @@ export const silentLogger = {
   trace: () => {},
 } as unknown as Logger;
 
-const RETRY_CONFIG = {
+export const RETRY_CONFIG = {
   RETRY_MAX_ATTEMPTS_PER_CYCLE: 5,
   RETRY_BACKOFF_BASE_MS: 1000,
   RETRY_JITTER_MAX_MS: 250,
