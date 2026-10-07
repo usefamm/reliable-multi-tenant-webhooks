@@ -5,8 +5,12 @@ import type { AppConfig } from '../config/env';
  * Structured JSON logger. Every log line can carry correlation identifiers
  * (requestId, eventId, deliveryId, attemptId). Secrets, tokens and full payloads
  * are never logged - callers log bounded identifiers/codes only.
+ *
+ * One format, in every environment: a line is a JSON object on stdout, whether
+ * this is a laptop or a log pipeline. A "pretty" switch would change what a human
+ * sees without changing what is stored, so the parseable form is the only one.
  */
-export function createLogger(config: Pick<AppConfig, 'LOG_LEVEL' | 'NODE_ENV'>, name: string): Logger {
+export function createLogger(config: Pick<AppConfig, 'LOG_LEVEL'>, name: string): Logger {
   return pino({
     name,
     level: config.LOG_LEVEL,
@@ -26,11 +30,6 @@ export function createLogger(config: Pick<AppConfig, 'LOG_LEVEL' | 'NODE_ENV'>, 
       censor: '[redacted]',
     },
     timestamp: pino.stdTimeFunctions.isoTime,
-    // Pretty-print only when a human runs it locally in development.
-    transport:
-      config.NODE_ENV === 'development' && process.env.LOG_PRETTY === '1'
-        ? { target: 'pino/file', options: { destination: 1 } }
-        : undefined,
   });
 }
 
