@@ -1526,9 +1526,11 @@ Dependency direction is deliberate: `common` → `db`/`config` → `domain` → 
 | 1 | 2026-10-06 21:59 – 23:02 | 7 | plan, scaffold, schema + seed, auth/isolation, atomic publication, idempotency, delivery listing |
 | — | ~4 h gap, no commits | | |
 | 2 | 2026-10-07 02:58 – 05:45 | 9 | worker claim loop, fencing, envelope + HMAC + outbound client, receiver, retry engine, redrive, observability, Compose, acceptance evidence |
-| 3 | 2026-10-07 06:14 – 06:56 | 4 | the three documents, then the live host run and the live Compose run that found and fixed two defects |
+| 3 | 2026-10-07 06:14 – 07:00 | 6 | the three documents, then the live host run and the live Compose run that found and fixed two defects |
 
-Total span **8h57m**, of which roughly **4h30m** was active work, in **20 commits**. The
+Total span **8h57m**, of which roughly **4h30m** was active work. `git rev-list --count HEAD` gives the
+commit count exactly - it moves every time this file is corrected, including by the commit that rewrote
+this sentence, so it is checked rather than claimed. The
 milestone-by-milestone rule (implement → run tests → inspect the diff → Conventional Commit) is what
 makes that history readable: one milestone per commit, never one giant drop.
 
