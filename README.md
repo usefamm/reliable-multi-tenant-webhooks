@@ -258,6 +258,16 @@ it - so the suite doubles as proof that the schema is reproducible from scratch.
 | `npm run build` | compile to `dist/` (what Compose runs) |
 | `npm run migrate:up` / `migrate:down` / `seed` | schema and fixtures |
 
+**Why `--runInBand` is not optional** - measured, not theorised. Running the suites in parallel with bare
+`npx jest` on this machine produced 18 failed suites / 68 failed tests, and every error was
+cross-suite interference on the one shared database: `deadlock detected` inside `resetDatabase()`'s
+`TRUNCATE … CASCADE`, `violates foreign key constraint "deliveries_event_id_fkey"` when another suite's
+teardown deleted the `events` row a test had just inserted, `Cannot use a pool after calling end on the
+pool`, and `waitForAttempts` timeouts because a neighbouring suite truncated the queue mid-dispatch.
+`npm test` on the same tree, immediately afterwards: **23 passed / 220 passed in 15.8 s**. So the
+parallel run is a real trap for a reviewer who types `jest`, and the honest fix is one database per
+worker process - not a change to the delivery logic, which those failures never touched.
+
 ---
 
 ## 5. Configuration reference
@@ -1251,10 +1261,13 @@ Command: `npm test` (jest, `--runInBand`), against PostgreSQL 14.13 on the host.
 Test Suites: 23 passed, 23 total
 Tests:       220 passed, 220 total
 Snapshots:   0 total
-Time:        15.7 s
+Time:        15.808 s
 ```
 
-The suite and test counts are deterministic; the wall-clock moves by a second or two between runs.
+The suite and test counts are deterministic; the wall-clock moves by a second or two between runs (the
+runs recorded here measured 15.7 s, 16.4 s and 15.8 s). The 15.8 s above was run on commit `89c42ac`;
+everything after it in this repository's history touches markdown only, so that number still describes
+the shipped code rather than a stale snapshot of it.
 
 `npm run typecheck` (tsc over src **and** test): clean. `npm run lint` (ESLint, `no-unused-vars` as
 error, explicit module boundaries): clean. `npm run build`: clean.
@@ -1395,8 +1408,10 @@ Honestly listed, in rough order of how much they would matter in production:
     `DOCKER_BUILDKIT=0 docker build -t reliable-webhook-delivery:local .` and started with
     `docker compose up --no-build`. Same Dockerfile, same tag, same result — a reviewer on a clean
     install can use the one-line `up --build`.
-15. **Test suites share one database and must run `--runInBand`.** Parallel jest would need one
-    database per worker.
+15. **Test suites share one database and must run `--runInBand`.** This is not hypothetical: bare
+    `npx jest` on this machine failed 18 of 23 suites through cross-suite interference (deadlocked
+    `TRUNCATE … CASCADE`, teardowns deleting a neighbour's rows) while `npm test` passed 220 of 220
+    seconds later — see §4. Parallelising it properly means one database per jest worker.
 16. **Coverage is reported, not enforced** (§29). There is no `coverageThreshold` in `jest.config.js`
     and no `collectCoverageFrom`, so a run only instruments files the suite actually loads and a drop in
     the percentage would not fail anything. The gate in this repository is the 220 assertions, not the
@@ -1526,9 +1541,16 @@ Dependency direction is deliberate: `common` → `db`/`config` → `domain` → 
 | 1 | 2026-10-06 21:59 – 23:02 | 7 | plan, scaffold, schema + seed, auth/isolation, atomic publication, idempotency, delivery listing |
 | — | ~4 h gap, no commits | | |
 | 2 | 2026-10-07 02:58 – 05:45 | 9 | worker claim loop, fencing, envelope + HMAC + outbound client, receiver, retry engine, redrive, observability, Compose, acceptance evidence |
-| 3 | 2026-10-07 06:14 – 07:00 | 6 | the three documents, then the live host run and the live Compose run that found and fixed two defects |
+| 3 | 2026-10-07 06:14 – 06:59 | 6 | the three documents, then the live host run and the live Compose run that found and fixed two defects |
+| 4 | 2026-10-07 08:33 → | — | documentation alignment passes after the build itself: the pre-build plan brought in line with the system that was actually built, then the measured parallel-jest trap recorded |
 
-Total span **8h57m**, of which roughly **4h30m** was active work. `git rev-list --count HEAD` gives the
+Total span **10h34m as of this writing** (first commit 21:59:33, previous commit 08:33:14). Re-derive it
+with `git log --format='%ci %s'` — like the commit count, it moves every time this file is corrected,
+including by the commit that records the correction, which is why session 4 has no end time and no
+commit count. Sessions 1–3 each have a first and last commit timestamp and sum to **4h34m**
+(1h02m45s + 2h46m46s + 0h44m55s, window end-to-end, not net of pauses), which is an upper bound on the
+active work inside them — thinking without a tool call leaves no git trace.
+`git rev-list --count HEAD` gives the
 commit count exactly - it moves every time this file is corrected, including by the commit that rewrote
 this sentence, so it is checked rather than claimed. The
 milestone-by-milestone rule (implement → run tests → inspect the diff → Conventional Commit) is what
@@ -1544,7 +1566,8 @@ honest-outcome model (`UNKNOWN` is harder to get right than it looks).
 * Built with AI assistance (this author's coding agent) plus standard libraries; the brief explicitly
   permits both with disclosure. Design decisions in §31 and §34 are the ones I would defend; each is
   grounded in code a reviewer can open.
-* Five real defects surfaced by measuring instead of trusting, and all are fixed:
+* Six things surfaced by measuring instead of trusting. Five were real defects, and all five are fixed;
+  the sixth is a documented trap rather than a bug:
   1. the capture endpoint's in-flight counter never decremented, so its "peak concurrency" was really
      its request count (found while writing `t9`);
   2. a replayed idempotency response is not byte-identical, because `jsonb` reorders keys (found by
@@ -1556,6 +1579,12 @@ honest-outcome model (`UNKNOWN` is harder to get right than it looks).
   5. `LOG_PRETTY` was documented as enabling human-readable logs while the transport it selected was
      `pino/file`, i.e. the same JSON - the switch and its documentation are removed, so there is now one
      log format and no phantom option.
+  6. `npx jest` (parallel, i.e. not the documented command) fails **18 of 23 suites** on this machine
+     without touching the delivery logic: the suites share one database, so `TRUNCATE … CASCADE` in one
+     suite deadlocks against another's writes and teardowns delete rows a neighbour just inserted. The
+     full output and the immediately following clean serial run are recorded in §4. `npm test` pins
+     `--runInBand`; the proper fix is one database per jest worker, which is test infrastructure the
+     timebox did not buy.
 * Nothing in this README quotes an unrun test. Coverage was measured (§29) rather than estimated, and
   the two things it does **not** prove are stated in the same place: the `migrate:up`/`migrate:down` CLI
   wrappers are not exercised by any test, and no load/soak measurement was taken, so "4 concurrent

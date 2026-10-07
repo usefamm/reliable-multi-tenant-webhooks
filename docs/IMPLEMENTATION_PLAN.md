@@ -467,6 +467,7 @@ Rule: after each milestone → run relevant tests → inspect diff → Conventio
 - **No CI pipeline** — there is no `.github/workflows` file. The suite is run by hand and the README records the command and the real output; adding CI means a Postgres service container, which is deployment work rather than a gap in the design.
 - **Tests need a reachable Postgres.** `TEST_DATABASE_URL` selects the server; `globalSetup` drops/recreates/migrates/seeds that database but does not provision one. No container is started for you, so pointing it at the wrong host destroys a real database — which is why the name is `webhook_test` and the compose stack publishes no Postgres port.
 - **Coverage is reported, not gated.** `jest.config.js` sets no `coverageThreshold`: the measured numbers are in the README, but nothing fails a run for dropping below them.
+- **The suite must run serially.** Tests reset shared transactional tables in `afterEach` (`TRUNCATE … RESTART IDENTITY CASCADE`) against one `webhook_test` database, so `npm test` pins `--runInBand`; running bare `npx jest` was measured at 18 failed suites of 23 from deadlocked truncates and teardowns deleting a neighbour's rows, while the serial run passed 220/220. Fixing it properly means one database per jest worker.
 
 ---
 
