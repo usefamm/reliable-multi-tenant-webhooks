@@ -166,13 +166,42 @@ curl -s 'http://127.0.0.1:4000/__control/effects?endpointId=eeeeeeee-0000-4000-8
 
 Tear down (including the volume): `docker compose down -v`.
 
-**Verification status, stated honestly:** `docker compose config` was validated (anchors, env,
-healthchecks, dependency conditions all resolve) and the compiled output each container runs was
-booted and exercised on the host (`/health` 200/503 paths, the 401 envelope, clean SIGTERM shutdown of
-all three processes). The Docker **daemon was not available in the environment this was built in**, so
-`docker compose up --build` has not been executed end-to-end here. The equivalent end-to-end path is
-fully covered by the test suite, which runs the same worker, receiver and API code against a real
-PostgreSQL and a real HTTP server.
+**Verification status, stated honestly.** The stack was brought up and exercised against a live daemon
+(Compose v2.12.1, Docker 20.10.20). What was observed:
+
+```
+docker compose ps     api running (healthy)   postgres running (healthy)
+                      worker-a / worker-b / receiver running
+                      bootstrap exited (0)            # one-shot migrate + seed
+curl :3000/health     {"status":"ok","uptimeSec":35,"database":"ok"}
+POST /events          202 {"eventId":"a1e2056d-…","status":"READY",…}
+GET  /events/:id      +1s -> state DELIVERED, totalAttempts 1, lastHttpStatus 200
+receiver effects      1 effect for that event
+GET  /ops/status      {"ready":0,"inFlight":0,"retryWait":0,"delivered":1,"dead":0,"expiredLeases":0}
+```
+
+The crash story was then run for real rather than only in jest: with `worker-b` stopped, `worker-a` was
+**paused** mid-dispatch (`docker compose pause worker-a`), leaving the delivery `IN_FLIGHT` with a lease
+nobody would ever complete. `worker-b` was started, the 30 s lease lapsed, and it recovered the row -
+`state DELIVERED, totalAttempts 2, cycle 1` with attempt rows
+
+```
+ attempt_number | lease_owner | lease_generation | outcome   | error_code
+              1 | worker-a    |                1 | RETRYABLE | timeout
+              2 | worker-b    |                2 | SUCCESS   |
+```
+
+and `worker-a` was then unpaused: its late write was rejected with the log line
+`"stale worker: completion fenced out (lease lost)"`, the delivery stayed `DELIVERED`, and the receiver
+still held **one** effect for **two** signed requests with two distinct attempt ids. Tear-down
+(`docker compose down -v`) removed containers, network and volume cleanly.
+
+Running it is also what found a real defect: only `bootstrap` declared a `build:` key, so the four
+image-only services made Compose attempt a registry pull of the local-only tag and abort with
+`pull access denied`. Every application service now declares the same build context and tag
+(`x-build` anchor). The one thing that could not be exercised is `up --build` itself, because buildx is
+blocked by a root-owned `~/.docker/buildx/current` on this machine (§32, item 14) - the image was built
+with the classic builder and started with `--no-build`.
 
 ---
 
@@ -188,6 +217,14 @@ export DATABASE_URL=postgres://webhook:webhook@127.0.0.1:5432/webhook
 export TENANT_A_TOKEN=dev-token-tenant-a
 export TENANT_B_TOKEN=dev-token-tenant-b
 export OPERATOR_TOKEN=dev-token-operator
+
+# 1b. that URL is the Compose service's. On a host-only Postgres use your own role
+#     and database, or the connection aborts with `role "webhook" does not exist`
+#     (Postgres surfaces it from InitializeSessionUserId):
+export DATABASE_URL=postgres://<your-user>@127.0.0.1:5432/webhook_dev
+#     destinations are deployment-owned config, so pin them too:
+export RECEIVER_BASE_URL=http://127.0.0.1:4000
+export WEBHOOK_ALLOWED_HOSTS=127.0.0.1:4000
 
 # 2. schema + deterministic seed (seed runs migrate up itself)
 npm run seed
@@ -231,9 +268,8 @@ placeholder values only - no real credential belongs in the repository.
 
 | Variable | Default | Meaning / why it exists |
 |---|---|---|
-| `NODE_ENV` | `development` | `test` silences pretty logging; `production` disables the pretty transport |
+| `NODE_ENV` | `development` | Validated mode. `test` additionally silences the two ad-hoc `console` fallbacks (`src/db/pool.ts`, `src/receiver/handler.ts`) |
 | `LOG_LEVEL` | `info` | pino level |
-| `LOG_PRETTY` | unset | `1` in development only, for human-readable local logs |
 | `DATABASE_URL` | **required** | the one dependency; also the queue |
 | `API_PORT` | `3000` | HTTP API listen port |
 | `WORKER_NAME` | `worker-a` | lease owner identity. **Must differ per process** |
@@ -429,8 +465,39 @@ response for an endpoint id that has never existed.
 Watch the effect land exactly once, even after duplicates:
 
 ```bash
-curl -s 'http://127.0.0.1:4000/__control/requests?endpointId=eeeeeeee-0000-4000-8000-0000000000a1' | wc -l
-curl -s 'http://127.0.0.1:4000/__control/effects?endpointId=eeeeeeee-0000-4000-8000-0000000000a1'
+EP=eeeeeeee-0000-4000-8000-0000000000a1
+curl -s "http://127.0.0.1:4000/__control/requests?endpointId=$EP" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log("requests:",JSON.parse(d).requests.length))'
+curl -s "http://127.0.0.1:4000/__control/effects?endpointId=$EP"   | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log("effects:",JSON.parse(d).effects.length))'
+```
+
+Observed in a live host run of exactly these commands (four processes, `webhook_dev` database):
+
+```
+PUBLISH  -> {"eventId":"db9c55af-…","deliveryId":"32e95c2b-…","status":"READY",
+             "statusUrl":"/events/db9c55af-…"}
++2s      -> GET /events/db9c55af-…  delivery.state "DELIVERED", totalAttempts 1,
+            cycle 1, nextAttemptAt null, lastHttpStatus 200, lastErrorCode null
+REPLAY   -> the same eventId and deliveryId; key order in the body was reordered
+CHANGED  -> 409 {"code":"conflict","message":"Idempotency-Key was reused with
+            different input; the original response cannot be replayed","requestId":…}
+TENANT B -> 404 {"code":"not_found","message":"Event not found","requestId":…}
+UNKNOWN  -> 404, identical shape and message
+"url"    -> 400 {"code":"bad_request","message":"Invalid request body: (body):
+            Unrecognized key(s) in object: 'url'","requestId":…}
+receiver -> requests: 1   effects: 1   (signature_ok true)
+/ops/status -> {"ready":0,"inFlight":0,"retryWait":0,"delivered":3,"dead":0,
+                "oldestPending":null,"expiredLeases":0,"workers":[]}
+                (counted after the three events of section 9 were published)
+```
+
+A `GET /health` on each process answers `{"status":"ok","uptimeSec":…,"database":"ok"}`, and the worker
+logs for the same run contain only identifiers and state - no token, no secret, no payload
+(the `owner`/`name` fields are elided here, ids are truncated for width):
+
+```
+{"level":30,"service":"worker-a","deliveryId":"60bde071-…","eventId":"5d57e923-…",
+ "attemptId":"d4f65664-…","attemptNumber":1,"leaseGeneration":"1","state":"RETRY_WAIT",
+ "msg":"delivery transitioned"}
 ```
 
 ---
@@ -468,6 +535,19 @@ curl -s http://127.0.0.1:3000/ops/status -H 'Authorization: Bearer dev-token-ope
 
 The receiver's per-event mode (step 3) takes precedence over the endpoint-wide one, which is how the
 acceptance suite builds a cycle where one attempt is rate-limited and the next is a plain 503.
+
+Measured while running this against a live four-process host deployment (real `curl`, real sockets,
+no fake timers):
+
+| Step | Observed |
+|---|---|
+| endpoint-wide `temp_failure`, publish | at +1.3 s: `state RETRY_WAIT`, `totalAttempts 1`, `lastErrorCode "http_503"`, `nextAttemptAt` = completion time **+1041 ms** (the 1 s ladder plus 41 ms of *unforced* jitter) |
+| clear the modes, wait | `DELIVERED`, `totalAttempts 2`, `cycle 1`, `lastHttpStatus 200` - the retry landed on the second attempt and the receiver kept **1** effect for **2** requests |
+| endpoint-wide `reject_400`, publish | `DEAD` within 1 s: `totalAttempts 1`, `lastHttpStatus 400`, `lastErrorCode "http_400"`, `nextAttemptAt null` - a 4xx other than 408/429 burns no retry budget |
+| redrive with a tenant token | `403 {"code":"forbidden","message":"This operation requires an operator token",…}`, DEAD row untouched |
+| redrive with the operator token | `202 {"state":"READY","cycle":2,"attemptCount":1,"attemptsInCycle":0,…}` - lifetime attempts preserved, cycle budget refilled |
+| after that redrive | `DELIVERED`, `totalAttempts 2`, `cycle 2`; receiver side: **2** requests for the event, **1** effect |
+| `GET /ops/status` at rest | all counters consistent with the rows (`delivered 3`, `ready/inFlight/retryWait/dead 0`, `expiredLeases 0`) |
 
 ---
 
@@ -1207,9 +1287,36 @@ Per suite:
 | `test/acceptance/t8-redrive-concurrency.spec.ts` | 3 | **PDF test 8** |
 | `test/acceptance/t9-bounds-rollback.spec.ts` | 5 | **PDF test 9** |
 
-Coverage is stated as the suite table above plus the requirement map in §30. A line-coverage percentage
-was **not** measured - no coverage run was executed in this session, and reporting an unmeasured number
-would be exactly the kind of claim the brief forbids. Run `npx jest --coverage` to produce it.
+Coverage, measured with `npx jest --coverage --runInBand` over the same 220 tests:
+
+| Scope | Stmts | Branch | Lines |
+|---|---|---|---|
+| **all files** | **87.89%** | **76.92%** | **88.50%** |
+| `src/worker` | 91.03 | 79.31 | 93.12 |
+| `src/modules/events` | 98.68 | 88.88 | 98.61 |
+| `src/modules/idempotency` | 93.87 | 87.50 | 95.55 |
+| `src/modules/operations` | 98.96 | 88.23 | 98.88 |
+| `src/modules/deliveries` | 96.15 | 87.09 | 95.94 |
+| `src/modules/webhooks` | 95.00 | 78.78 | 94.54 |
+| `src/modules/auth` | 95.12 | 81.81 | 95.71 |
+| `src/receiver` | 89.69 | 82.50 | 90.38 |
+| `src/common` | 87.20 | 59.45 | 87.73 |
+| `src/api` | 77.96 | 48.78 | 79.24 |
+| `src/db` | 45.45 | 21.73 | 45.66 |
+
+Two readings of that table matter more than the number itself:
+
+* **`src/db` understates reality.** `migrate.ts` shows 12.3% because every integration run drives the
+  schema through `migrateUp()` from jest's `globalSetup` - code istanbul does not instrument. The
+  *function* is exercised on every run (the suite would not boot without it); the *CLI entry points*
+  (`npm run migrate:up` / `migrate:down`) are what is untested.
+* **The gaps are where I would expect them.** `retry-policy.ts` and `delivery-queue.ts` are at 100%
+  statements - the two files that decide state transitions. `api/exception.filter.ts` (52.7%) is
+  uncovered in the branch that classifies a *foreign* `HttpException`; every typed error the app raises
+  (401/403/404/409/413) is asserted, and `common/logger.ts` redaction and `domain/types.ts` are at 100%.
+
+The requirement map in §30 remains the primary evidence: a percentage says lines were executed, not that
+the guarantee holds.
 
 ---
 
@@ -1282,10 +1389,18 @@ Honestly listed, in rough order of how much they would matter in production:
     misconfiguration requires a redrive rather than an automatic retry.
 13. **SSRF defence is hostname-based**, so a public hostname resolving to an internal address still
     passes (§25).
-14. **Docker Compose has not been executed end-to-end here** (no daemon in this environment) — see §3.
+14. **`docker compose up --build` needs a working BuildKit/buildx.** The stack itself was run
+    end-to-end (§3), but on the machine this was verified on `~/.docker/buildx/current` is owned by
+    root, so Compose's build step aborts with `permission denied`. The image was therefore built with
+    `DOCKER_BUILDKIT=0 docker build -t reliable-webhook-delivery:local .` and started with
+    `docker compose up --no-build`. Same Dockerfile, same tag, same result — a reviewer on a clean
+    install can use the one-line `up --build`.
 15. **Test suites share one database and must run `--runInBand`.** Parallel jest would need one
     database per worker.
-16. **Coverage percentage not measured** (§29).
+16. **Coverage is reported, not enforced** (§29). There is no `coverageThreshold` in `jest.config.js`
+    and no `collectCoverageFrom`, so a run only instruments files the suite actually loads and a drop in
+    the percentage would not fail anything. The gate in this repository is the 220 assertions, not the
+    number.
 
 ---
 
@@ -1404,15 +1519,20 @@ Dependency direction is deliberate: `common` → `db`/`config` → `domain` → 
 
 ## 36. Time spent and disclosure
 
-**Wall-clock** (from the git history, honest and checkable with `git log --format='%ci %s'`): the first
-commit is `2026-10-06 21:59` and the acceptance-evidence commit is `2026-10-07 05:45` - a span of about
-**7h45m**, which includes a ~4h gap with no commits. Active build time was therefore roughly
-**3h50m** across two sessions (21:59–23:02 and 02:58–05:46) in 16 commits, plus the documentation pass
-this file is part of. The milestone-by-milestone rule (implement → run tests → inspect the diff →
-Conventional Commit) is what makes that history readable: one milestone per commit, never one giant
-drop.
+**Wall-clock** (from the git history, checkable with `git log --format='%ci %s'`):
 
-**Where the time actually went**, by the numbers: 4,324 lines of TypeScript across 57 source files,
+| Session | Local times | Commits | What happened |
+|---|---|---|---|
+| 1 | 2026-10-06 21:59 – 23:02 | 7 | plan, scaffold, schema + seed, auth/isolation, atomic publication, idempotency, delivery listing |
+| — | ~4 h gap, no commits | | |
+| 2 | 2026-10-07 02:58 – 05:45 | 9 | worker claim loop, fencing, envelope + HMAC + outbound client, receiver, retry engine, redrive, observability, Compose, acceptance evidence |
+| 3 | 2026-10-07 06:14 – 06:50 | 2 | the three documents, then the live host run and the live Compose run that fixed two defects |
+
+Total span **8h51m**, of which roughly **4h25m** was active work, in **18 commits**. The
+milestone-by-milestone rule (implement → run tests → inspect the diff → Conventional Commit) is what
+makes that history readable: one milestone per commit, never one giant drop.
+
+**Where the time actually went**, by the numbers: 4,323 lines of TypeScript across 57 source files,
 6,021 lines across 33 test files, 220 tests in 23 suites, 4 migrations. The expensive parts were not the
 API - they were the concurrency semantics (lease/fencing/`SKIP LOCKED` SQL, the two-phase transaction
 boundaries), making the tests deterministic while still using real sockets and a real database, and the
@@ -1422,13 +1542,22 @@ honest-outcome model (`UNKNOWN` is harder to get right than it looks).
 * Built with AI assistance (this author's coding agent) plus standard libraries; the brief explicitly
   permits both with disclosure. Design decisions in §31 and §34 are the ones I would defend; each is
   grounded in code a reviewer can open.
-* Three real bugs surfaced *because* the tests measured something rather than trusting the
-  implementation: the capture endpoint's in-flight counter never decremented (so its "peak concurrency"
-  was really its request count), a replayed idempotency response is not byte-identical because `jsonb`
-  reorders keys, and a permissive request schema silently dropped caller-supplied `url`/`secret` fields.
-  All three are fixed and commented.
-* Nothing in this README quotes an unrun test. Where something could not be verified in this
-  environment (the Docker daemon; coverage percentages), that is stated instead of estimated.
+* Five real defects surfaced by measuring instead of trusting, and all are fixed:
+  1. the capture endpoint's in-flight counter never decremented, so its "peak concurrency" was really
+     its request count (found while writing `t9`);
+  2. a replayed idempotency response is not byte-identical, because `jsonb` reorders keys (found by
+     asserting on a replay);
+  3. a permissive request schema silently dropped caller-supplied `url`/`secret` fields (found by
+     writing the rejection test first);
+  4. four Compose services had only an `image:` key, so `docker compose up --build` tried to *pull* the
+     local tag and aborted (`pull access denied`) - found by actually running the stack (§3);
+  5. `LOG_PRETTY` was documented as enabling human-readable logs while the transport it selected was
+     `pino/file`, i.e. the same JSON - the switch and its documentation are removed, so there is now one
+     log format and no phantom option.
+* Nothing in this README quotes an unrun test. Coverage was measured (§29) rather than estimated, and
+  the two things it does **not** prove are stated in the same place: the `migrate:up`/`migrate:down` CLI
+  wrappers are not exercised by any test, and no load/soak measurement was taken, so "4 concurrent
+  dispatches per worker" is a proven bound, not a proven throughput.
 
 **Licence/data:** no proprietary code, no production data, no real credentials. The tokens, secrets and
 UUIDs in the seed and in `.env.example` are published development fixtures and are unusable against
