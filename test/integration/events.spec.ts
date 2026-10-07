@@ -98,10 +98,17 @@ describe('M4 event publication + read model', () => {
       expect(res.body.requestId).toBeTruthy();
     });
 
+    // The PDF contract is "endpointId, eventType and a JSON object payload", so
+    // object-only is the requirement, not an arbitrary restriction. Every other
+    // JSON shape is asserted, not just arrays.
     it.each([
       ['empty eventType', publishBody({ eventType: '' })],
       ['eventType over 100 chars', publishBody({ eventType: 'x'.repeat(101) })],
-      ['payload not an object', publishBody({ payload: [1, 2, 3] })],
+      ['payload is an array', publishBody({ payload: [1, 2, 3] })],
+      ['payload is a string', publishBody({ payload: 'order.created' })],
+      ['payload is a number', publishBody({ payload: 42 })],
+      ['payload is a boolean', publishBody({ payload: true })],
+      ['payload is null', publishBody({ payload: null })],
       ['missing endpointId', { eventType: 'a.b', payload: {} }],
       ['malformed endpointId', publishBody({ endpointId: 'not-a-uuid' })],
     ])('rejects invalid input with 400: %s', async (_label, body) => {

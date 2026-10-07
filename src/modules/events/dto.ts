@@ -6,6 +6,14 @@ import { isUuid } from '../../common/ids';
  *  - endpointId: a UUID identifying a preconfigured endpoint owned by the caller.
  *  - eventType: non-empty string, <= 100 characters.
  *  - payload: a JSON object (not an array/scalar).
+ *
+ * Object-only is the specification, not an invented restriction: the PDF says
+ * "Requests specify endpointId, eventType and a JSON object payload". An array
+ * or scalar payload is therefore a 400. Keeping the shape closed also keeps the
+ * two places that consume it simple - the envelope embeds `payload` as one field
+ * of a JSON object, and the idempotency fingerprint is canonical JSON over
+ * { endpointId, eventType, payload }.
+ *
  * The raw body size (<= 64 KiB) is enforced by the express JSON parser (-> 413)
  * before this schema runs, so a too-large body never reaches validation.
  */
