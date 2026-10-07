@@ -18,28 +18,43 @@ const MIGRATIONS_DIR = resolve(__dirname, '../../migrations');
 
 const MIGRATION_FILE_RE = /^(\d{3})_[a-z0-9_]+\.sql$/;
 
-interface MigrationFile {
+export interface MigrationFile {
   version: string;
   filename: string;
   sql: string;
 }
 
-function readMigrations(): MigrationFile[] {
+export function readMigrations(dir: string = MIGRATIONS_DIR): MigrationFile[] {
   let entries: string[];
   try {
-    entries = readdirSync(MIGRATIONS_DIR);
-  } catch {
-    return [];
+    entries = readdirSync(dir);
+  } catch (err) {
+    // Silently returning [] here would make `migrate:up` report success on a
+    // deployment that never shipped /migrations, and the app would then fail
+    // later with "relation does not exist" errors that point nowhere near the
+    // real cause.
+    throw new Error(`Migrations directory ${dir} is unreadable: ${(err as Error).message}`);
   }
-  return entries
+  const migrations = entries
     .map((filename) => {
       const m = MIGRATION_FILE_RE.exec(filename);
       if (!m) return null;
-      const sql = readFileSync(join(MIGRATIONS_DIR, filename), 'utf8');
+      const sql = readFileSync(join(dir, filename), 'utf8');
       return { version: m[1], filename, sql };
     })
     .filter((x): x is MigrationFile => x !== null)
     .sort((a, b) => a.version.localeCompare(b.version));
+
+  // Two files claiming one version would abort mid-run on schema_migrations'
+  // primary key, which reads like a database bug rather than a naming mistake.
+  const dup = migrations.findIndex((m, i) => i > 0 && m.version === migrations[i - 1].version);
+  if (dup !== -1) {
+    throw new Error(
+      `Duplicate migration version ${migrations[dup].version}: ` +
+        `${migrations[dup - 1].filename} and ${migrations[dup].filename}`,
+    );
+  }
+  return migrations;
 }
 
 async function ensureMigrationsTable(pool: Pool): Promise<void> {
