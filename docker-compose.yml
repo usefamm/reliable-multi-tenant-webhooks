@@ -17,9 +17,15 @@
 
 name: reliable-webhook-delivery
 
-# One image, five processes. `bootstrap` is the only service with a `build:` key,
-# so exactly one image tag is produced and every other service starts from it -
-# which is what makes "these are the same program run twice" true for the workers.
+# One image, five processes. Every application service declares the SAME build
+# context and the SAME image tag, so the tag exists locally before any container
+# starts and Compose never tries to pull it from a registry - the layer cache makes
+# the repeated build near-instant. It is still literally one image, which is what
+# makes "these are the same program run twice" true for the two workers.
+x-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+
 x-service: &service
   image: reliable-webhook-delivery:local
   restart: unless-stopped
@@ -65,9 +71,7 @@ services:
   # never race each other's DDL, and nothing else starts until it exits 0.
   bootstrap:
     <<: *service
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: *app-build
     image: reliable-webhook-delivery:local
     command: ["node", "dist/db/seed.js"]
     environment: *app-env
@@ -78,6 +82,7 @@ services:
 
   api:
     <<: *service
+    build: *app-build
     image: reliable-webhook-delivery:local
     command: ["node", "dist/api/main.js"]
     environment: *app-env
@@ -104,6 +109,7 @@ services:
   # whose lease lapsed - so killing either one loses nothing.
   worker-a:
     <<: *service
+    build: *app-build
     image: reliable-webhook-delivery:local
     command: ["node", "dist/worker/worker-main.js"]
     environment:
@@ -115,6 +121,7 @@ services:
 
   worker-b:
     <<: *service
+    build: *app-build
     image: reliable-webhook-delivery:local
     command: ["node", "dist/worker/worker-main.js"]
     environment:
@@ -130,6 +137,7 @@ services:
   # being able to see.
   receiver:
     <<: *service
+    build: *app-build
     image: reliable-webhook-delivery:local
     command: ["node", "dist/receiver/main.js"]
     environment:
