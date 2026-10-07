@@ -1526,9 +1526,9 @@ Dependency direction is deliberate: `common` → `db`/`config` → `domain` → 
 | 1 | 2026-10-06 21:59 – 23:02 | 7 | plan, scaffold, schema + seed, auth/isolation, atomic publication, idempotency, delivery listing |
 | — | ~4 h gap, no commits | | |
 | 2 | 2026-10-07 02:58 – 05:45 | 9 | worker claim loop, fencing, envelope + HMAC + outbound client, receiver, retry engine, redrive, observability, Compose, acceptance evidence |
-| 3 | 2026-10-07 06:14 – 06:50 | 2 | the three documents, then the live host run and the live Compose run that fixed two defects |
+| 3 | 2026-10-07 06:14 – 06:56 | 4 | the three documents, then the live host run and the live Compose run that found and fixed two defects |
 
-Total span **8h51m**, of which roughly **4h25m** was active work, in **18 commits**. The
+Total span **8h57m**, of which roughly **4h30m** was active work, in **20 commits**. The
 milestone-by-milestone rule (implement → run tests → inspect the diff → Conventional Commit) is what
 makes that history readable: one milestone per commit, never one giant drop.
 
