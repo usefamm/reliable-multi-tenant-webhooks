@@ -203,6 +203,60 @@ describe('M9 outbound webhook client', () => {
     expect(Buffer.byteLength(result.responseSnippet!, 'utf8')).toBeLessThanOrEqual(4096);
   });
 
+  /**
+   * The bound has to be a REAL memory/network bound (PDF: "Captured response
+   * details <= 4 KiB"), not a truncation of a body we already buffered in full.
+   *
+   * The server here is willing to send 8 MiB and writes with backpressure, so it
+   * can only make progress while the client keeps reading. If the client stopped
+   * at the bound, the socket closes and the server's accepted byte count stays
+   * near the kernel buffer size; if it kept reading, the count would climb
+   * towards 8 MiB. That difference is what makes this a proof rather than a
+   * restatement of the assertion above.
+   */
+  it('stops reading at the bound instead of buffering an oversized response', async () => {
+    const CHUNK = Buffer.alloc(4096, 0x78);
+    const OFFERED = 8 * 1024 * 1024;
+    let accepted = 0;
+    let notifyClosed: (() => void) | null = null;
+    const closed = new Promise<void>((resolve) => {
+      notifyClosed = resolve;
+    });
+
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      res.on('close', () => notifyClosed?.());
+      const pump = (): void => {
+        while (accepted < OFFERED) {
+          accepted += CHUNK.byteLength;
+          if (!res.write(CHUNK)) {
+            res.once('drain', pump);
+            return;
+          }
+        }
+        res.end();
+      };
+      pump();
+    };
+
+    const result = await dispatch();
+    // Deterministic: wait for the server to observe the closed connection rather
+    // than sleeping an arbitrary amount and hoping. The guard timer is cleared
+    // when the close wins the race so it cannot hold the event loop open.
+    let guard: NodeJS.Timeout | undefined;
+    const gaveUp = new Promise<void>((resolve) => {
+      guard = setTimeout(resolve, 2_000);
+    });
+    await Promise.race([closed, gaveUp]);
+    clearTimeout(guard);
+
+    expect(result.outcome).toBe('SUCCESS');
+    expect(Buffer.byteLength(result.responseSnippet!, 'utf8')).toBeLessThanOrEqual(4096);
+    // The client hung up at the bound: the server never got to send what it had.
+    expect(accepted).toBeLessThan(1024 * 1024);
+    expect(accepted).toBeLessThan(OFFERED);
+  });
+
   describe('worker processor wiring (claim -> sign -> dispatch -> complete)', () => {
     let db: Database;
 
@@ -325,6 +379,62 @@ describe('M9 outbound webhook client', () => {
       const result = await processor(work);
       expect(result.outcome).toBe('NON_RETRYABLE');
       expect(result.errorCode).toBe('endpoint_missing');
+    });
+
+    /**
+     * The 4 KiB bound must survive the processor's redaction pass. A realistic
+     * receiver error body is full of the word "token", and replacing each
+     * occurrence with "[redacted:token]" GROWS the string - so redacting after
+     * truncating silently breaks the bound. This asserts the bound both on the
+     * processor result and on the bytes actually stored in the attempt row.
+     */
+    it('keeps the captured response within 4 KiB even when redaction expands it', async () => {
+      handler = (_req, res) => {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(`{"error":"${'token '.repeat(900)}"}`);
+      };
+      const clock = new FakeClock(Date.UTC(2026, 0, 1));
+      const { work } = await seedAndClaim();
+      const processor = createWebhookProcessor({
+        db,
+        clock,
+        client: new WebhookClient({ ...CLIENT_CONFIG, WEBHOOK_TIMEOUT_MS: 2000 }),
+      });
+
+      const result = await processor(work);
+      expect(result.outcome).toBe('NON_RETRYABLE');
+      expect(result.responseSnippet).not.toBeNull();
+      expect(result.responseSnippet).toContain('[redacted:token]');
+      expect(Buffer.byteLength(result.responseSnippet!, 'utf8')).toBeLessThanOrEqual(4096);
+
+      const policy = new RetryPolicy(clock, new FakeRandom([0]), {
+        RETRY_MAX_ATTEMPTS_PER_CYCLE: 5,
+        RETRY_BACKOFF_BASE_MS: 1000,
+        RETRY_JITTER_MAX_MS: 250,
+        RETRY_AFTER_CAP_MS: 60000,
+      });
+      const decision = policy.decide(work, result);
+      const queue = new DeliveryQueue(db, clock);
+      const done = await queue.completeAttempt({
+        deliveryId: work.deliveryId,
+        attemptRowId: work.attemptRowId,
+        leaseOwner: work.leaseOwner,
+        leaseGeneration: work.leaseGeneration,
+        outcome: result.outcome,
+        httpStatus: result.httpStatus,
+        errorCode: result.errorCode,
+        responseSnippet: result.responseSnippet,
+        nextState: decision.nextState,
+        nextAttemptAt: decision.nextAttemptAt,
+      });
+      expect(done.applied).toBe(true);
+
+      const [row] = await q<{ stored_bytes: number }>(
+        `SELECT octet_length(response_snippet) AS stored_bytes
+           FROM delivery_attempts WHERE id = $1`,
+        [work.attemptRowId],
+      );
+      expect(row.stored_bytes).toBeLessThanOrEqual(4096);
     });
   });
 });

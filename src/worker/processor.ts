@@ -79,9 +79,19 @@ export function createWebhookProcessor(deps: {
 
 const SECRETISH = /secret|token|authorization/gi;
 
-/** Bound the snippet again defensively and scrub accidental secret echoes. */
+/** PDF bound on captured response details, matching the WEBHOOK_MAX_RESPONSE_BYTES default. */
+const MAX_SNIPPET_BYTES = 4096;
+
+/**
+ * Scrub accidental secret echoes, then bound the result.
+ *
+ * The order matters: "[redacted:token]" is longer than the "token" it replaces,
+ * so bounding first and redacting second lets redaction push the stored snippet
+ * past the 4 KiB limit (a body of nothing but "token" measured 11,587 bytes).
+ * Redacting first makes the bound unconditional.
+ */
 function sanitizeSnippet(snippet: string | null): string | null {
   if (snippet === null) return null;
-  const bounded = truncateToBytes(snippet, 4096);
-  return bounded.replace(SECRETISH, (m: string) => `[redacted:${m}]`);
+  const redacted = snippet.replace(SECRETISH, (m: string) => `[redacted:${m}]`);
+  return truncateToBytes(redacted, MAX_SNIPPET_BYTES);
 }

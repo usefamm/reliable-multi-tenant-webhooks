@@ -209,13 +209,19 @@ export class WebhookClient {
       const req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(options, (res) => {
         response = res;
         res.on('data', (c: Buffer) => {
+          if (settled || captured >= this.config.WEBHOOK_MAX_RESPONSE_BYTES) {
+            // Bound already reached: accept nothing more, even if body bytes are
+            // still in flight ahead of the socket teardown.
+            return;
+          }
           chunks.push(c);
           captured += c.byteLength;
           if (captured >= this.config.WEBHOOK_MAX_RESPONSE_BYTES) {
-            // Bound reached: resolve with what we have and stop reading.
-            finish(
-              resultFromStatus(res, this.boundedText(chunks)),
-            );
+            // Bound reached: resolve with what we have and stop the stream at the
+            // source, so the peer's remaining body is never read into memory.
+            const bounded = resultFromStatus(res, this.boundedText(chunks));
+            res.destroy();
+            finish(bounded);
           }
         });
         res.on('end', () => {
