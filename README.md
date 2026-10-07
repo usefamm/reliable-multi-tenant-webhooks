@@ -259,12 +259,12 @@ it - so the suite doubles as proof that the schema is reproducible from scratch.
 | `npm run migrate:up` / `migrate:down` / `seed` | schema and fixtures |
 
 **Why `--runInBand` is not optional** - measured, not theorised. Running the suites in parallel with bare
-`npx jest` on this machine produced 18 failed suites / 68 failed tests, and every error was
-cross-suite interference on the one shared database: `deadlock detected` inside `resetDatabase()`'s
-`TRUNCATE … CASCADE`, `violates foreign key constraint "deliveries_event_id_fkey"` when another suite's
-teardown deleted the `events` row a test had just inserted, `Cannot use a pool after calling end on the
-pool`, and `waitForAttempts` timeouts because a neighbouring suite truncated the queue mid-dispatch.
-`npm test` on the same tree, immediately afterwards: **23 passed / 220 passed in 15.8 s**. So the
+`npx jest` on this machine produced **18 failed suites / 7 passed, 67 failed tests / 166 passed in 72.2 s**,
+and every error was cross-suite interference on the one shared database: `violates foreign key constraint
+"deliveries_event_id_fkey"` when another suite's teardown deleted the `events` row a test had just inserted
+(50 occurrences), `deadlock detected` inside `resetDatabase()`'s `TRUNCATE … CASCADE` (20), and
+`waitForAttempts` timeouts because a neighbouring suite truncated the queue mid-dispatch (12).
+`npm test` on the same tree, immediately afterwards: **25 passed / 233 passed in 15.6 s**. So the
 parallel run is a real trap for a reviewer who types `jest`, and the honest fix is one database per
 worker process - not a change to the delivery logic, which those failures never touched.
 
@@ -1120,7 +1120,10 @@ check, so isolation does not leak through response *shape*).
 * **Hard total timeout** (`WEBHOOK_TIMEOUT_MS`, default 2s) covering connect, response and body; expiry
   destroys the socket. A per-request `setTimeout` alone would not bound the body read.
 * **Bounded response capture** (4 KiB). Reading stops and the request is settled at the bound, so a
-  hostile or chatty destination cannot make a worker buffer unboundedly.
+  hostile or chatty destination cannot make a worker buffer unboundedly. The same 4 KiB is the bound on
+  what is *retained*: secret redaction runs **before** truncation, because the `[redacted:…]` replacement
+  is longer than the word it hides, and `test/integration/webhook-client.spec.ts` asserts
+  `octet_length(response_snippet) <= 4096` in the table rather than only the returned string.
 * **Caller headers are never forwarded.** The only outbound headers are `content-type`,
   `content-length` and the five identity headers. The inbound `Authorization` token is *never* copied -
   proven at the wire in `t3` (`authorization` absent from the captured request).
@@ -1255,19 +1258,19 @@ with reordered keys. The original suite compared raw bytes and failed - correctl
 
 ## 29. Test results (actual)
 
-Command: `npm test` (jest, `--runInBand`), against PostgreSQL 14.13 on the host.
+Command: `npm test` (jest, `--runInBand`), against PostgreSQL 14.13 (Homebrew) on the host.
 
 ```
-Test Suites: 23 passed, 23 total
-Tests:       220 passed, 220 total
+Test Suites: 25 passed, 25 total
+Tests:       233 passed, 233 total
 Snapshots:   0 total
-Time:        15.808 s
+Time:        15.564 s
 ```
 
+This is the run that immediately follows the failed bare-`npx jest` attempt recorded in §4, on the tree
+after the final audit fixes - so the number describes the shipped code, not an earlier snapshot of it.
 The suite and test counts are deterministic; the wall-clock moves by a second or two between runs (the
-runs recorded here measured 15.7 s, 16.4 s and 15.8 s). The 15.8 s above was run on commit `89c42ac`;
-everything after it in this repository's history touches markdown only, so that number still describes
-the shipped code rather than a stale snapshot of it.
+runs recorded here measured 16.1 s, 17.0 s under `--coverage` and 15.6 s).
 
 `npm run typecheck` (tsc over src **and** test): clean. `npm run lint` (ESLint, `no-unused-vars` as
 error, explicit module boundaries): clean. `npm run build`: clean.
@@ -1279,13 +1282,15 @@ Per suite:
 | `test/unit/common.spec.ts` | 7 | `canonicalJson` (object key order irrelevant, array order significant), byte truncation on character boundaries, id/request-id shapes |
 | `test/unit/webhook-signing.spec.ts` | 19 | HMAC vector over `timestamp + "." + bytes`, lowercase hex, timing-safe verify, tamper/wrong-secret/length-mismatch fail closed |
 | `test/unit/retry-policy.spec.ts` | 9 | ladder 1s/2s/4s/8s + jitter, 5-attempt exhaustion → DEAD, `max(backoff, Retry-After)` capped at 60s, `SUCCESS`→DELIVERED, `NON_RETRYABLE`→DEAD, UNKNOWN retried |
+| `test/unit/migrations.spec.ts` | 4 | migration discovery without a database: the shipped ordered set, the `NNN_name.sql` pattern, unreadable directory refused, duplicate version named |
 | `test/integration/auth.spec.ts` | 10 | 401/403 matrix, token-hash lookup, tenant scoping of every route |
-| `test/integration/events.spec.ts` | 18 | atomic publish, 202 shape, strict schema, 413, ownership 404, event read model |
+| `test/integration/events.spec.ts` | 22 | atomic publish, 202 shape, strict schema (every non-object payload shape: array, string, number, boolean, null), 413, ownership 404, event read model |
+| `test/integration/logging.spec.ts` | 3 | the fields the publication call site hands the logger (request/event/delivery/endpoint ids only), a generated request id when the caller sends none, and no payload bytes, endpoint secret or API token anywhere in the logged fields |
 | `test/integration/idempotency.spec.ts` | 8 | claim-before-work, replay, 409 on changed input, key not consumed by failures, tenant-scoped keys |
 | `test/integration/deliveries.spec.ts` | 14 | keyset pagination stability, state filter, limit bounds, no secret/URL leakage |
 | `test/integration/worker-claim.spec.ts` | 10 | `SKIP LOCKED` no double-claim, lease fields, attempt allocated pre-dispatch, expired-lease recovery |
 | `test/integration/worker-fencing.spec.ts` | 3 | fenced completion `applied:false`, truthful attempt history under a lost lease, interleaved claims |
-| `test/integration/webhook-client.spec.ts` | 12 | exact bytes, five headers, fresh valid signature, no auth forwarding, no redirect following, total timeout, 4 KiB bound, honest classification |
+| `test/integration/webhook-client.spec.ts` | 14 | exact bytes, five headers, fresh valid signature, no auth forwarding, no redirect following, total timeout, honest classification, and the 4 KiB response bound from both sides: the client stops *reading* at the limit instead of buffering it, and the snippet stays ≤4 KiB on the wire and in `delivery_attempts.response_snippet` even when redaction expands the text |
 | `test/integration/receiver.spec.ts` | 30 | verification order, freshness ±300s, dedup identity, `content_conflict`, all eight modes, control surface gating |
 | `test/integration/delivery-loop.spec.ts` | 15 | full loop: success, retry to recovery, exhaustion to DEAD, redrive, restart preserving schedule |
 | `test/integration/redrive.spec.ts` | 15 | DEAD-only, cycle semantics, budget preservation, audit row, idempotent replay, concurrency |
@@ -1300,29 +1305,31 @@ Per suite:
 | `test/acceptance/t8-redrive-concurrency.spec.ts` | 3 | **PDF test 8** |
 | `test/acceptance/t9-bounds-rollback.spec.ts` | 5 | **PDF test 9** |
 
-Coverage, measured with `npx jest --coverage --runInBand` over the same 220 tests:
+Coverage, measured with `npx jest --coverage --runInBand` over the same 233 tests:
 
-| Scope | Stmts | Branch | Lines |
-|---|---|---|---|
-| **all files** | **87.89%** | **76.92%** | **88.50%** |
-| `src/worker` | 91.03 | 79.31 | 93.12 |
-| `src/modules/events` | 98.68 | 88.88 | 98.61 |
-| `src/modules/idempotency` | 93.87 | 87.50 | 95.55 |
-| `src/modules/operations` | 98.96 | 88.23 | 98.88 |
-| `src/modules/deliveries` | 96.15 | 87.09 | 95.94 |
-| `src/modules/webhooks` | 95.00 | 78.78 | 94.54 |
-| `src/modules/auth` | 95.12 | 81.81 | 95.71 |
-| `src/receiver` | 89.69 | 82.50 | 90.38 |
-| `src/common` | 87.20 | 59.45 | 87.73 |
-| `src/api` | 77.96 | 48.78 | 79.24 |
-| `src/db` | 45.45 | 21.73 | 45.66 |
+| Scope | Stmts | Branch | Funcs | Lines |
+|---|---|---|---|---|
+| **all files** | **88.70%** | **76.55%** | **89.32%** | **89.22%** |
+| `src/worker` | 91.78 | 79.31 | 93.33 | 93.18 |
+| `src/modules/events` | 98.75 | 88.88 | 100 | 98.68 |
+| `src/modules/idempotency` | 93.87 | 87.50 | 91.66 | 95.55 |
+| `src/modules/operations` | 98.96 | 88.23 | 100 | 98.88 |
+| `src/modules/deliveries` | 96.15 | 87.09 | 100 | 95.94 |
+| `src/modules/webhooks` | 91.93 | 71.01 | 92.85 | 91.22 |
+| `src/modules/auth` | 97.56 | 86.36 | 100 | 98.57 |
+| `src/receiver` | 89.69 | 82.50 | 94.11 | 90.38 |
+| `src/common` | 87.20 | 59.45 | 84.21 | 87.73 |
+| `src/config` | 82.60 | 37.50 | 83.33 | 81.81 |
+| `src/api` | 77.96 | 48.78 | 86.66 | 79.24 |
+| `src/db` | 55.79 | 37.03 | 60.00 | 55.30 |
 
 Two readings of that table matter more than the number itself:
 
-* **`src/db` understates reality.** `migrate.ts` shows 12.3% because every integration run drives the
-  schema through `migrateUp()` from jest's `globalSetup` - code istanbul does not instrument. The
-  *function* is exercised on every run (the suite would not boot without it); the *CLI entry points*
-  (`npm run migrate:up` / `migrate:down`) are what is untested.
+* **`src/db` understates reality.** `migrate.ts` shows 35.21% (up from 12.3% once its discovery rules got
+  unit tests) because `migrateUp()`'s body, `migrateDown()` and the CLI `main()` run from jest's
+  `globalSetup` - code istanbul does not instrument. The *function* is exercised on every run (the suite
+  would not boot without it), and the CLI wrappers were driven by hand against a throwaway database
+  (`migrate:down`, `migrate:up`, `migrate:up` again, `seed`, `seed` again) as recorded in §36.
 * **The gaps are where I would expect them.** `retry-policy.ts` and `delivery-queue.ts` are at 100%
   statements - the two files that decide state transitions. `api/exception.filter.ts` (52.7%) is
   uncovered in the branch that classifies a *foreign* `HttpException`; every typed error the app raises
@@ -1409,12 +1416,12 @@ Honestly listed, in rough order of how much they would matter in production:
     `docker compose up --no-build`. Same Dockerfile, same tag, same result — a reviewer on a clean
     install can use the one-line `up --build`.
 15. **Test suites share one database and must run `--runInBand`.** This is not hypothetical: bare
-    `npx jest` on this machine failed 18 of 23 suites through cross-suite interference (deadlocked
-    `TRUNCATE … CASCADE`, teardowns deleting a neighbour's rows) while `npm test` passed 220 of 220
-    seconds later — see §4. Parallelising it properly means one database per jest worker.
+    `npx jest` on this machine failed 18 of 25 suites (67 of 233 tests) through cross-suite interference
+    (deadlocked `TRUNCATE … CASCADE`, teardowns deleting a neighbour's rows) while `npm test` passed 233
+    of 233 seconds later — see §4. Parallelising it properly means one database per jest worker.
 16. **Coverage is reported, not enforced** (§29). There is no `coverageThreshold` in `jest.config.js`
     and no `collectCoverageFrom`, so a run only instruments files the suite actually loads and a drop in
-    the percentage would not fail anything. The gate in this repository is the 220 assertions, not the
+    the percentage would not fail anything. The gate in this repository is the 233 tests, not the
     number.
 
 ---
@@ -1542,11 +1549,12 @@ Dependency direction is deliberate: `common` → `db`/`config` → `domain` → 
 | — | ~4 h gap, no commits | | |
 | 2 | 2026-10-07 02:58 – 05:45 | 9 | worker claim loop, fencing, envelope + HMAC + outbound client, receiver, retry engine, redrive, observability, Compose, acceptance evidence |
 | 3 | 2026-10-07 06:14 – 06:59 | 6 | the three documents, then the live host run and the live Compose run that found and fixed two defects |
-| 4 | 2026-10-07 08:33 → | — | documentation alignment passes after the build itself: the pre-build plan brought in line with the system that was actually built, then the measured parallel-jest trap recorded |
+| 4 | 2026-10-07 08:33 – 13:09 | 3 | documentation alignment passes after the build itself: the pre-build plan brought in line with the system that was actually built, the measured parallel-jest trap recorded, local-only working notes removed from the tree and the history |
+| 5 | 2026-10-07 13:46 → | — | final engineering audit of the built system: the 4 KiB response-detail bound enforced on the wire and after redaction, the object-only payload contract asserted for every non-object JSON shape, one correlation log line per accepted publication, and the migration runner's two silent failure modes made explicit |
 
-Total span **10h34m as of this writing** (first commit 21:59:33, previous commit 08:33:14). Re-derive it
+Total span **16h26m as of this writing** (first commit 21:59:33, previous commit 14:25:30). Re-derive it
 with `git log --format='%ci %s'` — like the commit count, it moves every time this file is corrected,
-including by the commit that records the correction, which is why session 4 has no end time and no
+including by the commit that records the correction, which is why session 5 has no end time and no
 commit count. Sessions 1–3 each have a first and last commit timestamp and sum to **4h34m**
 (1h02m45s + 2h46m46s + 0h44m55s, window end-to-end, not net of pauses), which is an upper bound on the
 active work inside them — thinking without a tool call leaves no git trace.
@@ -1556,8 +1564,8 @@ this sentence, so it is checked rather than claimed. The
 milestone-by-milestone rule (implement → run tests → inspect the diff → Conventional Commit) is what
 makes that history readable: one milestone per commit, never one giant drop.
 
-**Where the time actually went**, by the numbers: 4,323 lines of TypeScript across 57 source files,
-6,021 lines across 33 test files, 220 tests in 23 suites, 4 migrations. The expensive parts were not the
+**Where the time actually went**, by the numbers: 4,385 lines of TypeScript across 57 source files,
+6,342 lines across 35 test files, 233 tests in 25 suites, 4 migrations. The expensive parts were not the
 API - they were the concurrency semantics (lease/fencing/`SKIP LOCKED` SQL, the two-phase transaction
 boundaries), making the tests deterministic while still using real sockets and a real database, and the
 honest-outcome model (`UNKNOWN` is harder to get right than it looks).
@@ -1566,8 +1574,8 @@ honest-outcome model (`UNKNOWN` is harder to get right than it looks).
 * Built with AI assistance (this author's coding agent) plus standard libraries; the brief explicitly
   permits both with disclosure. Design decisions in §31 and §34 are the ones I would defend; each is
   grounded in code a reviewer can open.
-* Six things surfaced by measuring instead of trusting. Five were real defects, and all five are fixed;
-  the sixth is a documented trap rather than a bug:
+* Nine things surfaced by measuring instead of trusting. Eight were real defects, and all eight are fixed;
+  the ninth is a documented trap rather than a bug:
   1. the capture endpoint's in-flight counter never decremented, so its "peak concurrency" was really
      its request count (found while writing `t9`);
   2. a replayed idempotency response is not byte-identical, because `jsonb` reorders keys (found by
@@ -1579,16 +1587,31 @@ honest-outcome model (`UNKNOWN` is harder to get right than it looks).
   5. `LOG_PRETTY` was documented as enabling human-readable logs while the transport it selected was
      `pino/file`, i.e. the same JSON - the switch and its documentation are removed, so there is now one
      log format and no phantom option.
-  6. `npx jest` (parallel, i.e. not the documented command) fails **18 of 23 suites** on this machine
+  6. `sanitizeSnippet` truncated the captured response to 4 KiB **before** redacting it, and the
+     replacement text is longer than the word it hides: a realistic 4 KiB receiver error body produced
+     an 11,587-byte snippet that was returned to the worker and stored in
+     `delivery_attempts.response_snippet`. Found by asserting the bound on the wire, fixed by redacting
+     first and truncating last; the test now checks `octet_length()` in the table, not just the returned
+     string.
+  7. The migration runner treated a missing `/migrations` directory as "no pending migrations" - a
+     deployment that forgot to ship it looked healthy until a later `relation does not exist` - and two
+     files sharing a version aborted mid-run on `schema_migrations`' primary key. Both are refused up
+     front, naming the path or the colliding pair.
+  8. `.env.example` shipped `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`. node-postgres reads
+     those only as fallbacks for a key the connection config omits, and every pool here is built from a
+     complete `DATABASE_URL`, so they were dead configuration that looked required.
+  9. `npx jest` (parallel, i.e. not the documented command) fails **18 of 25 suites** on this machine
      without touching the delivery logic: the suites share one database, so `TRUNCATE … CASCADE` in one
      suite deadlocks against another's writes and teardowns delete rows a neighbour just inserted. The
      full output and the immediately following clean serial run are recorded in §4. `npm test` pins
      `--runInBand`; the proper fix is one database per jest worker, which is test infrastructure the
      timebox did not buy.
 * Nothing in this README quotes an unrun test. Coverage was measured (§29) rather than estimated, and
-  the two things it does **not** prove are stated in the same place: the `migrate:up`/`migrate:down` CLI
-  wrappers are not exercised by any test, and no load/soak measurement was taken, so "4 concurrent
-  dispatches per worker" is a proven bound, not a proven throughput.
+  the two things it does **not** prove are stated in the same place: the `migrate:up`/`migrate:down`/`seed`
+  CLI wrappers have no automated test of their wiring (their file-discovery rules are unit-tested, and the
+  wrappers were driven by hand against a throwaway database - `down`, `up`, `up` again, `seed`, `seed`
+  again, then dropped), and no load/soak measurement was taken, so "4 concurrent dispatches per worker"
+  is a proven bound, not a proven throughput.
 
 **Licence/data:** no proprietary code, no production data, no real credentials. The tokens, secrets and
 UUIDs in the seed and in `.env.example` are published development fixtures and are unusable against
