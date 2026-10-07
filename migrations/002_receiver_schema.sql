@@ -39,15 +39,18 @@ CREATE INDEX receiver_requests_endpoint_idx ON receiver_requests (endpoint_id, r
 -- Test-only receiver modes (selected via fixtures / control interface,
 -- NEVER via public event fields). Keyed by endpoint (and optionally event).
 -- ---------------------------------------------------------------------------
+-- Scope encoding: event_id = '' means "every event for this endpoint".
+-- An empty-string sentinel is used instead of NULL because the column is part
+-- of the primary key, and a primary-key column is implicitly NOT NULL.
 CREATE TABLE receiver_modes (
   endpoint_id   text NOT NULL,
-  event_id      text,                       -- NULL => applies to all events for the endpoint
+  event_id      text NOT NULL DEFAULT '',   -- '' => applies to all events for the endpoint
   mode          text NOT NULL,              -- success|temp_failure|perm_failure|rate_limited|lost_response|slow|reject_400|redirect
   remaining     integer,                    -- for counted modes: how many more calls fail
   retry_after   integer,                    -- for rate_limited: Retry-After delta-seconds
   delay_ms      integer,                    -- for slow: artificial delay
   updated_at    timestamptz NOT NULL DEFAULT now(),
 
-  -- One mode per (endpoint, event-or-global).
+  -- One mode per (endpoint, event-or-endpoint-wide).
   CONSTRAINT receiver_modes_pkey PRIMARY KEY (endpoint_id, event_id)
 );

@@ -37,6 +37,15 @@ const EnvSchema = z.object({
 
   RECEIVER_PORT: z.coerce.number().int().positive().default(4000),
   RECEIVER_TIMESTAMP_TOLERANCE_SEC: z.coerce.number().int().positive().default(300),
+  /**
+   * The receiver's failure-mode control surface is a TEST TOOL (PDF section 22):
+   * modes must never be steerable through public event fields, and in a
+   * production-like deployment the control endpoints should be switched off.
+   */
+  RECEIVER_TEST_CONTROLS: z
+    .enum(['true', 'false', '1', '0'])
+    .default('1')
+    .transform((v) => v === '1' || v === 'true'),
 
   TENANT_A_TOKEN: z.string().min(1),
   TENANT_B_TOKEN: z.string().min(1),
