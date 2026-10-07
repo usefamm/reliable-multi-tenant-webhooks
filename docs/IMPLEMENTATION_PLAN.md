@@ -92,7 +92,7 @@
 - Structured logs include requestId, eventId, deliveryId, attemptId. Document indexes for due-work scans and tenant listing.
 
 ### 1.13 Deterministic mock modes (fixtures/test-only control, never public event fields)
-1. Success 2. Temporary/permanent failure (503 N times or forever) 3. Rate limited (429 + Retry-After N times then succeed) 4. Accepted-but-response-lost (commit effect, drop connection) 5. Slow/timeout 6. Rejected 400 7. Redirect.
+`success`, `temp_failure` (503 a bounded number of times, then success), `perm_failure` (500 forever), `rate_limited` (429 + `Retry-After`), `lost_response` (commit the effect, then destroy the connection), `slow` (respond later than the sender's timeout), `reject_400` (non-retryable), `redirect` (3xx the sender must never follow) — eight modes for what the PDF lists as seven cases, because "temporary/permanent failure" is two different behaviours worth observing separately. Gated behind `RECEIVER_TEST_CONTROLS`, selected per `(endpointId, eventId)` (or endpoint-wide), never from a public event field.
 - Injected clock, scheduler hooks, deterministic randomness → fast reproducible tests.
 
 ### 1.14 Acceptance tests (real DB + real HTTP mock; assert durable state, attempt history, receiver effect counts)
@@ -172,17 +172,17 @@
 ### 2.2 Framework / library choices **[IMPL DECISION]**
 - **NestJS** (clean DI, guards, pipes, modules) — allowed and encouraged if clean within timebox.
 - **pg** (node-postgres) directly — "well-understood database access layer", full control of `FOR UPDATE SKIP LOCKED` and transaction boundaries. No heavy ORM (`synchronize` forbidden).
-- **Migrations**: `node-pg-migrate` (real SQL/JS migrations, reproducible from empty DB).
+- **Migrations**: plain `.sql` files in `migrations/` + a small hand-written runner (`src/db/migrate.ts`) that applies them in lexical order and records each version in `schema_migrations`. Chosen over `node-pg-migrate` so the runner has no extra dependency and stays readable end to end, and so `globalSetup` can import `migrateUp()` directly.
 - **Validation**: `zod` for DTO + config.
 - **Logging**: `pino` (structured JSON).
-- **Testing**: `jest` + `supertest`; **testcontainers** or a dedicated compose test DB for real Postgres; real HTTP receiver.
+- **Testing**: `jest` + `supertest` against a **real PostgreSQL** selected by `TEST_DATABASE_URL` (dropped, recreated, migrated and seeded in `test/global-setup.ts`) and a real HTTP receiver. No testcontainers dependency: the suite needs only a reachable server, which keeps CI simple and the run deterministic.
 - **Clock/random injection**: a `Clock` and `Random` provider interface; deterministic fakes in tests.
 
 ---
 
 ## 3. Database model
 
-All PKs are UUIDs. All timestamps `timestamptz` in UTC.
+Identifiers are `text` PKs holding UUID values (`crypto.randomUUID()`) — the id in the API response, the wire header and the database is one string with no casting, and adding a wire-visible `attempt_id` never needed a schema change. All timestamps `timestamptz`, all stored and compared in UTC. Four migrations: `001_core_schema` → `004_delivery_listing_index`; this section is the **as-built** schema, not a sketch.
 
 **tenants** `(id, name, created_at)`
 
@@ -197,6 +197,7 @@ All PKs are UUIDs. All timestamps `timestamptz` in UTC.
 (id, event_id→events UNIQUE, tenant_id, endpoint_id,
  state delivery_state,               -- READY|IN_FLIGHT|RETRY_WAIT|DELIVERED|DEAD
  envelope_bytes bytea,               -- exact body, written once
+ envelope_hash text,                 -- sha256 hex of envelope_bytes (integrity/debugging)
  attempt_count int,                  -- lifetime attempts (not reset by redrive)
  cycle int,                          -- automatic cycle number; redrive increments
  attempts_in_cycle int,              -- attempts used in current cycle (≤5)
@@ -213,26 +214,28 @@ All PKs are UUIDs. All timestamps `timestamptz` in UTC.
 **delivery_attempts**
 ```
 (id, delivery_id→deliveries, attempt_number int, cycle int,
+ attempt_id text NOT NULL,                     -- the X-Attempt-Id actually sent (fresh per attempt)
  lease_owner text, lease_generation bigint,   -- ownership evidence
- started_at, finished_at,
+ started_at, finished_at,                      -- finished_at NULL = outcome unknown
  http_status int,                              -- null when unknown
- outcome attempt_outcome,                      -- SUCCESS|RETRYABLE|NON_RETRYABLE|UNKNOWN
+ outcome attempt_outcome DEFAULT 'UNKNOWN',    -- SUCCESS|RETRYABLE|NON_RETRYABLE|UNKNOWN
  error_code text,                              -- bounded
  response_snippet text)                        -- ≤4 KiB
 ```
+- Inserted in the **claim** transaction, before any HTTP: a row with `outcome='UNKNOWN'` and `finished_at IS NULL` is the durable evidence that an attempt was allocated and its outcome never confirmed.
 
 **idempotency_records**
 ```
 (id, tenant_id, operation text,               -- 'publish_event' | 'redrive'
  idempotency_key text, request_hash text,      -- canonical hash of validated input
  response_status int, response_body jsonb,     -- original response to replay
- resource_id uuid,                             -- eventId (publish) / deliveryId (redrive)
+ resource_id text,                             -- eventId (publish) / deliveryId (redrive)
  created_at,
  UNIQUE(tenant_id, operation, idempotency_key))
 ```
 - Unique constraint scoped by tenant → different tenants reuse the same key.
 
-**redrive_audit** `(id, delivery_id, operator_token_id, reason, idempotency_key, created_at)`
+**redrive_audit** `(id, delivery_id→deliveries, operator, reason, idempotency_key, created_at)` — `operator` is the token's non-secret label (never the raw token), indexed by `(delivery_id, created_at)`.
 
 **receiver_effects** (mock receiver, durable dedup)
 ```
@@ -241,16 +244,20 @@ All PKs are UUIDs. All timestamps `timestamptz` in UTC.
 ```
 - Unique constraint = idempotent business effect; conflicting content_hash under same identity → reject.
 
-**receiver_requests** (mock receiver log) `(id, endpoint_id, event_id, attempt_id, received_at, mode, verified bool)` — records every request for test assertions.
+**receiver_requests** (mock receiver log) `(id, endpoint_id, event_id, delivery_id, attempt_id, signature_ok bool, mode, received_at)` — records **every** inbound request, including rejected ones, so tests assert `requests vs effects` rather than trusting a response. Two indexes: `(event_id, received_at)`, `(endpoint_id, received_at)`.
 
-### 3.1 Indexes (each documented in code + DESIGN.md)
-- `deliveries (state, next_attempt_at)` **partial** where `state IN ('READY','RETRY_WAIT')` → due-work scan for claim.
-- `deliveries (lease_expires_at)` where `state='IN_FLIGHT'` → lease-expiry recovery scan.
-- `deliveries (tenant_id, state, id)` → tenant listing + state filter + stable ordering.
-- `events (tenant_id, created_at, id)` → tenant event queries.
-- `delivery_attempts (delivery_id, attempt_number)` → history ordering.
-- `idempotency_records` covered by its UNIQUE constraint → key lookup.
-- `receiver_effects` covered by UNIQUE(endpoint_id,event_id) → dedup lookup.
+**receiver_modes** (test-only) `(endpoint_id, event_id DEFAULT '', mode, remaining, retry_after, delay_ms, updated_at, PRIMARY KEY(endpoint_id, event_id))` — `event_id = ''` is an endpoint-wide scope sentinel; `''` instead of NULL because a PK column is implicitly NOT NULL. `remaining` is decremented on consumption, which is what makes "503 twice then succeed" reproducible.
+
+**auth_tokens** `(token_hash text PK, tenant_id→tenants NULL for operator, role, label, created_at)` — the PK is `sha256` of the raw bearer token, so the **plaintext token is never stored** and lookup is one indexed hash read; the raw token only ever appears in an `Authorization` header. Two CHECKs enforce the role/tenant consistency that the guards otherwise have to trust: `role IN ('tenant','operator')` and `(tenant ⇒ tenant_id NOT NULL) / (operator ⇒ NULL)`. `label` is what the logs and redrive audit may name.
+
+### 3.1 Indexes (as shipped, each commented in the migration itself)
+- `deliveries_due_idx ON deliveries (next_attempt_at) WHERE state IN ('READY','RETRY_WAIT')` → the due-work scan; the partial predicate keeps hot rows only, since `IN_FLIGHT`/terminal rows are not claimable on the due branch.
+- `deliveries_lease_expiry_idx ON deliveries (lease_expires_at) WHERE state='IN_FLIGHT'` → lease-expiry recovery.
+- `deliveries_tenant_state_idx ON deliveries (tenant_id, state, created_at DESC, id DESC)` → tenant listing **with** a state filter, in the exact order the query uses.
+- `deliveries_tenant_created_idx ON deliveries (tenant_id, created_at DESC, id DESC)` (migration 004) → the same listing **without** a state filter, so the keyset scan needs no sort.
+- `deliveries_state_idx ON deliveries (state)` → the `/ops/status` counters `GROUP BY`.
+- `events_tenant_created_idx ON events (tenant_id, created_at DESC, id DESC)`; `endpoints_tenant_idx`; `delivery_attempts_delivery_idx ON (delivery_id, attempt_number)` → ordered history; `redrive_audit_delivery_idx ON (delivery_id, created_at)`; `auth_tokens_tenant_idx`.
+- `idempotency_records` is covered by its `UNIQUE (tenant_id, operation, idempotency_key)` constraint; `receiver_effects` by `UNIQUE (endpoint_id, event_id)` — both are the lookup index *and* the correctness rule, which is why no separate index is needed.
 
 ---
 
@@ -285,21 +292,35 @@ Retry-wait is claimed directly by the due scan (`state IN (READY, RETRY_WAIT) AN
 
 ## 5. Worker lifecycle
 
-Per worker (id = `worker-A`/`worker-B` + pid):
-1. Loop while running and free slots exist (`inFlight < 4`).
-2. **Txn #1 (claim):**
-   - Recover expired leases first, then claim due work:
-     `SELECT ... FROM deliveries WHERE (state IN ('READY','RETRY_WAIT') AND next_attempt_at<=now()) OR (state='IN_FLIGHT' AND lease_expires_at<now()) ORDER BY next_attempt_at FOR UPDATE SKIP LOCKED LIMIT n` (n = free slots).
-   - For each: `state=IN_FLIGHT`, `lease_owner=me`, `lease_generation++`, `lease_expires_at=now()+LEASE_TTL`, `attempts_in_cycle++`, `attempt_count++`; **insert delivery_attempts row** (outcome UNKNOWN, started_at=now). Commit.
+Per worker (id = `WORKER_NAME`, e.g. `worker-a` / `worker-b`, used verbatim as `lease_owner` — the deployment gives the processes distinct names instead of the runtime guessing a `pid` suffix):
+1. Loop while running. Each pass attempts up to `WORKER_CLAIM_BATCH_SIZE` claims and **acquires a semaphore slot before each claim**, breaking immediately when no slot is free — so a claim is never made for work that cannot be dispatched.
+2. **Txn #1 (claim)** — one statement per unit of work, not a batch `LIMIT n`. Expired-lease recovery is *not* a separate step; it is one OR-branch of the due predicate:
+   ```sql
+   WITH candidate AS (
+     SELECT id FROM deliveries
+      WHERE (state IN ('READY','RETRY_WAIT') AND next_attempt_at <= $1)
+         OR (state = 'IN_FLIGHT' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1)
+      ORDER BY next_attempt_at ASC NULLS LAST, id ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT 1)
+   UPDATE deliveries d SET state='IN_FLIGHT', lease_owner=$2,
+          lease_generation=d.lease_generation+1, lease_expires_at=$3,
+          attempt_count=d.attempt_count+1, attempts_in_cycle=d.attempts_in_cycle+1,
+          updated_at=$1
+     FROM candidate WHERE d.id=candidate.id
+   RETURNING ...
+   ```
+   `$1` is the **injected clock**, never Postgres `now()` — one clock for both processes is what makes the retry schedule testable deterministically. The CTE locks and picks the row, the outer `UPDATE … FROM` writes it, `RETURNING` hands back the fenced coordinates in the same round trip.
+   - Same transaction then **inserts the `delivery_attempts` row** (fresh `attempt_id`, `outcome='UNKNOWN'`, `started_at`, `lease_owner`, `lease_generation`). Commit.
 3. **Dispatch (no txn open):** build headers (fresh attemptId, fresh Unix-seconds timestamp, HMAC over stored envelope bytes), POST with 2s timeout, no redirect, capture ≤4KiB.
-4. **Txn #2 (complete), fenced:**
-   - `UPDATE deliveries SET ... WHERE id=? AND lease_owner=me AND lease_generation=?`. **0 rows → stale; discard result, do not overwrite.**
-   - Update attempt row (finished_at, http_status, outcome, error_code, response_snippet) with same fence.
-   - Transition: 2xx→DELIVERED; retryable & `attempts_in_cycle<5`→RETRY_WAIT + `next_attempt_at=now+backoff`; else→DEAD (clear lease/next_attempt_at).
+4. **Txn #2 (complete):**
+   - `UPDATE delivery_attempts SET finished_at, outcome, http_status, error_code, response_snippet WHERE id=?` — **no lease fence**: this worker's own attempt row always records what it actually observed, even if it is already stale. History lies less than state does.
+   - `UPDATE deliveries SET ... WHERE id=? AND lease_owner=me AND lease_generation=?`. **0 rows → stale; the outcome is discarded, the newer state is preserved.** On a terminal transition (`next_attempt_at IS NULL`) the same statement clears `lease_owner` and `lease_expires_at`.
+   - Transition: 2xx→DELIVERED; retryable & `attempts_in_cycle<5`→RETRY_WAIT + `next_attempt_at=clock.now()+backoff`; else→DEAD.
 5. Slot freed → loop. Idle → poll after short interval.
-6. **Shutdown:** stop claiming; document in-flight treatment (**[IMPL DECISION]**: wait up to `SHUTDOWN_GRACE_MS` for in-flight HTTP to finish and commit; on timeout, leave leases to expire → recovered by another worker; attempt already persisted so budget is correct).
+6. **Shutdown:** stop claiming; document in-flight treatment (**[IMPL DECISION]**: wait up to `WORKER_SHUTDOWN_GRACE_MS` for in-flight HTTP to finish and commit; on timeout, leave leases to expire → recovered by another worker; attempt already persisted so budget is correct).
 
-**Bounded concurrency:** a fixed-size semaphore (4). Claim `LIMIT` = free slots only → never claim more than can be processed → no unbounded in-memory queue.
+**Bounded concurrency:** an in-memory counting semaphore of `WORKER_CONCURRENCY` (default 4). The slot is taken *before* the claim, and each claim fetches one row — so concurrency is capped by construction, there is no batch `LIMIT` to size, and no unbounded in-memory queue can form.
 
 ---
 
@@ -317,12 +338,12 @@ Per worker (id = `worker-A`/`worker-B` + pid):
 
 | Boundary | Contents | Guarantee |
 |---|---|---|
-| **Publish txn** | validate → insert event + delivery(READY) + idempotency_record (all-or-nothing) | event ⟺ delivery atomic; idempotent |
+| **Publish txn** | validate → insert event + delivery(READY) + idempotency_record (with the replayable status/body) (all-or-nothing) | event ⟺ delivery atomic; idempotent |
 | **Claim txn** | lock due rows (SKIP LOCKED) → set IN_FLIGHT + lease + generation++ → insert attempt(UNKNOWN) | attempt persisted **before** dispatch |
 | **HTTP** | *outside any txn* | no locks held during network |
 | **Complete txn** | fenced update delivery state + attempt outcome + schedule | stale writes rejected; state consistent |
-| **Redrive txn** | check DEAD → idempotency lookup → set READY, cycle++, attempts_in_cycle=0, next_attempt_at=now → audit | one cycle under concurrency |
-| **Receiver effect txn** | verify → insert receiver_effect (ON CONFLICT) + business update | effect exactly once, durable |
+| **Redrive txn** | check DEAD → idempotency lookup → set READY, cycle++, attempts_in_cycle=0, next_attempt_at=clock.now(), **lease_owner/lease_expires_at cleared** → audit | one cycle under concurrency; no stale lease can fence the fresh attempts |
+| **Receiver effect txn** | verify → insert effect `ON CONFLICT (endpoint_id,event_id)` + business update | **one durable effect per (endpoint,event), however many requests arrive** — enforced by the receiver, never promised by the sender |
 
 No distributed transaction across API/worker/receiver.
 
@@ -354,7 +375,7 @@ No distributed transaction across API/worker/receiver.
 ## 10. Receiver deduplication strategy
 
 - Verify HMAC (timing-safe `crypto.timingSafeEqual`) + timestamp freshness (±300s) **before** any effect.
-- Effect identity = `(endpoint_id, event_id)`; store `content_hash` of the payload.
+- Effect identity = `(endpoint_id, event_id)`; store `content_hash` = `sha256(canonicalJson(full envelope))` — the whole envelope, not just the payload, so a replayed `eventId` with *any* changed field is detected as a conflict.
 - Insert effect in one txn `ON CONFLICT (endpoint_id,event_id) DO NOTHING`:
   - inserted → apply business effect → 200.
   - conflict + same content_hash → 200, no second effect.
@@ -377,9 +398,9 @@ No distributed transaction across API/worker/receiver.
 
 ## 12. Testing strategy
 
-- **Real Postgres + real HTTP receiver** (compose test profile / testcontainers). No mocking the DB for integration tests.
+- **Real Postgres + real HTTP receiver.** `test/global-setup.ts` drops and recreates the database named by `TEST_DATABASE_URL`, applies every migration from empty and writes the deterministic seed; integration tests talk to a live receiver over real sockets. No mocking the DB, no testcontainers.
 - **Deterministic time/random**: `Clock`/`Random` providers injected; fakes advance time and fix jitter → retry-schedule tests run without 8s sleeps.
-- **Crash injection**: worker run in child process / harness that can be killed between phases (after claim-commit before dispatch; after dispatch before complete-commit). Restart asserts recovery.
+- **Crash injection**: a crash is modelled the honest way — work is durably committed, then the worker is abandoned and the injected clock moves past the lease expiry, so recovery is claimed as "another worker finds leased `IN_FLIGHT` work". One test strands a genuinely slow in-flight worker so a second worker reclaims it mid-dispatch and the first is fenced on completion. The process-level version of the same story (pause a real container until its lease lapses, then let the other worker take over) was verified through Docker Compose and is recorded in the README rather than in `jest`.
 - **Failure harness**: receiver modes selected via test-only control endpoint (never public event fields).
 - Coverage = the 9 PDF acceptance tests (mapped in §1.14) as integration/failure tests + focused unit tests (canonicalJson, backoff/Retry-After, HMAC, fencing SQL, state transitions).
 - Assert **durable state, attempt history, receiver effect counts** — not just API responses.
@@ -412,22 +433,24 @@ No distributed transaction across API/worker/receiver.
 
 Rule: after each milestone → run relevant tests → inspect diff → Conventional Commit → do not proceed while fundamentally broken.
 
+**This table was written before the build.** The `Commit(s)` column is *planned* subject text, and the real history follows the diff rather than this table: some rows landed as one commit where they were planned as two, and some milestones split into an implementation commit plus a `test:` commit (fencing and the retry/recovery evidence both did). The subjects are Conventional Commits throughout and every commit is one coherent milestone-sized change — but `git log --oneline` is the authority here, not this column.
+
 ---
 
 ## 14. Explicit assumptions **[IMPL DECISION]**
-1. Lease TTL = 30s; worker poll idle interval = 250ms; claim `LIMIT` = free slots.
+1. Lease TTL = 30s (`WORKER_LEASE_TTL_MS`); poll interval when the queue is empty = 250ms (`WORKER_POLL_INTERVAL_MS`); one claim pass claims at most `WORKER_CLAIM_BATCH_SIZE` (default 4) deliveries **and** stops as soon as the outbound semaphore has no free slot — never claim work you cannot dispatch.
 2. `occurredAt` set at publication and embedded in envelope (stable across attempts/redrive).
 3. Validation failures do not consume an idempotency key.
 4. Only `Retry-After` delta-seconds honoured; HTTP-date treated as unsupported → normal backoff.
 5. Receiver `content_hash` = canonical hash of the full envelope (eventId+deliveryId+eventType+occurredAt+payload).
 6. Status endpoint protected by operator token.
-7. `GET /deliveries` max page size = 100, default 20, stable order by `(created_at, id)`.
+7. `GET /deliveries` page size: default 50 (`DEFAULT_PAGE_SIZE`), max 100 (`MAX_PAGE_SIZE`), out-of-range `limit` → 400; stable order `created_at DESC, id DESC` (newest first, `id` breaks `created_at` ties).
 8. Redrive resets `attempts_in_cycle` to 0 and increments `cycle`; lifetime `attempt_count` retained.
 9. Envelope stored as `bytea` (exact bytes) to guarantee byte-identical reuse.
-10. Worker identity = `${name}-${pid}` for lease_owner.
+10. Lease owner (`lease_owner`) = `WORKER_NAME` verbatim — no `pid` suffix. Distinct identity across processes is a **deployment** concern, not a runtime guess: Compose sets `worker-a` and `worker-b`, so two workers on one host cannot share an owner string and fence each other out. A name collision would be visible immediately in `/ops/status`.
 
 ## 15. Trade-offs
-- **pg + node-pg-migrate over TypeORM/Prisma**: more SQL to write, but full control of `SKIP LOCKED`, fencing, and exact transaction boundaries — the core of the challenge. No `synchronize`.
+- **pg + plain SQL migrations (hand-written 149-line runner) over TypeORM/Prisma/node-pg-migrate**: more SQL to write, but full control of `SKIP LOCKED`, fencing, and exact transaction boundaries — the core of the challenge. No `synchronize`, and the migration list is literally a folder of `.sql` files you can read top to bottom.
 - **DB-backed queue over Redis/broker**: simpler, matches PDF, transactional with state; lower throughput ceiling (acceptable; fairness/rate-limit are discussion topics).
 - **NestJS**: structure + DI + guards speed up clean code; small overhead vs bare Express.
 - **Two-phase txn (claim / complete) around HTTP**: extra round-trips, but mandatory (no locks during HTTP) and enables crash-safe recovery.
@@ -441,6 +464,9 @@ Rule: after each milestone → run relevant tests → inspect diff → Conventio
 - Due-scan polling (not `LISTEN/NOTIFY`) → small latency vs simplicity.
 - In-memory semaphore per worker; total system concurrency = workers × 4.
 - HTTP-date `Retry-After` unsupported.
+- **No CI pipeline** — there is no `.github/workflows` file. The suite is run by hand and the README records the command and the real output; adding CI means a Postgres service container, which is deployment work rather than a gap in the design.
+- **Tests need a reachable Postgres.** `TEST_DATABASE_URL` selects the server; `globalSetup` drops/recreates/migrates/seeds that database but does not provision one. No container is started for you, so pointing it at the wrong host destroys a real database — which is why the name is `webhook_test` and the compose stack publishes no Postgres port.
+- **Coverage is reported, not gated.** `jest.config.js` sets no `coverageThreshold`: the measured numbers are in the README, but nothing fails a run for dropping below them.
 
 ---
 
