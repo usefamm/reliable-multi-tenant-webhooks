@@ -220,7 +220,7 @@ describe('M9 outbound webhook client', () => {
      * Seed a tenant endpoint pointing at the local test server, publish a
      * delivery through the queue, and claim it - exactly the production path.
      */
-    async function seedAndClaim(): Promise<ClaimedWork> {
+    async function seedAndClaim(): Promise<{ work: ClaimedWork; endpointId: string }> {
       const endpointId = newUuid();
       await db.query(
         'INSERT INTO endpoints (id, tenant_id, name, url, secret, created_at) VALUES ($1,$2,$3,$4,$5,now())',
@@ -228,12 +228,12 @@ describe('M9 outbound webhook client', () => {
       );
       await insertDelivery(db, { endpointId });
       const queue = new DeliveryQueue(db, new FakeClock(Date.UTC(2026, 0, 1)));
-      return (await queue.claimNext('worker-test', 30_000))!;
+      return { work: (await queue.claimNext('worker-test', 30_000))!, endpointId };
     }
 
     it('signs the persisted envelope bytes and lands DELIVERED end-to-end', async () => {
       const clock = new FakeClock(Date.UTC(2026, 0, 1));
-      const work = await seedAndClaim();
+      const { work } = await seedAndClaim();
       const processor = createWebhookProcessor({
         db,
         clock,
@@ -294,7 +294,7 @@ describe('M9 outbound webhook client', () => {
     });
 
     it('never dispatches to a destination outside the allowlist (SSRF boundary)', async () => {
-      const work = await seedAndClaim();
+      const { work } = await seedAndClaim();
       const processor = createWebhookProcessor({
         db,
         clock: new FakeClock(Date.UTC(2026, 0, 1)),
@@ -309,12 +309,14 @@ describe('M9 outbound webhook client', () => {
     });
 
     it('marks NON_RETRYABLE when the endpoint configuration is gone', async () => {
-      const work = await seedAndClaim();
-      // Removing an endpoint requires clearing the rows that reference it
+      const { work, endpointId } = await seedAndClaim();
+      // Removing this destination requires clearing the rows that reference it
       // (deliveries cascade from events); the claimed work object already holds
       // everything the attempt needs, so only the endpoints lookup fails.
-      await db.query('DELETE FROM events');
-      await db.query('DELETE FROM endpoints');
+      // Scoped to this test's endpoint: the deterministic seed stays intact for
+      // every other suite, which runs in a randomised file order.
+      await db.query('DELETE FROM events WHERE endpoint_id = $1', [endpointId]);
+      await db.query('DELETE FROM endpoints WHERE id = $1', [endpointId]);
       const processor = createWebhookProcessor({
         db,
         clock: new FakeClock(Date.UTC(2026, 0, 1)),

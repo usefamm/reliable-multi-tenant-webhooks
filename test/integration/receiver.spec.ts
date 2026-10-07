@@ -10,6 +10,7 @@ import { canonicalJson } from '../../src/common/canonical-json';
 import { sha256Hex } from '../../src/common/hash';
 import { ReceiverMode } from '../../src/receiver/repository';
 import { SEED, TEST_DATABASE_URL } from '../helpers/test-env';
+import { resetDatabase } from '../helpers/db';
 import { startReceiver, type ReceiverApp } from '../helpers/receiver';
 
 const { endpointA1, endpointA2, endpointSecretA1: SECRET } = SEED;
@@ -30,8 +31,12 @@ describe('mock receiver', () => {
   let app: ReceiverApp;
 
   beforeEach(async () => {
+    // Own baseline, not a leftover one: jest runs files in a non-fixed order, and
+    // this suite signs against the seeded endpoint secrets. resetDatabase()
+    // re-asserts the deterministic seed (tenants, endpoints, tokens) and clears
+    // every transactional table, including the receiver's own state.
+    await resetDatabase();
     app = await startReceiver({ databaseUrl: TEST_DATABASE_URL });
-    await app.repo.resetAll();
   });
   afterEach(async () => {
     await app.close();

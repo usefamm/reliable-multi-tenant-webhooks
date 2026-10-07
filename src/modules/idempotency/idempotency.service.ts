@@ -54,17 +54,17 @@ export function requestFingerprint(input: unknown): string {
 }
 
 /**
- * Publication/operation idempotency built directly on the database.
+ * Idempotency built directly on the database: one row per
+ * (tenant, operation, key) holding the original response so a retry replays it.
  *
- * Concurrency model: the UNIQUE(tenant_id, operation, idempotency_key) index
- * serializes concurrent requests that share a key. The first transaction to
- * commit wins; a concurrent transaction that did its own work but then hits the
- * unique violation on INSERT rolls back (discarding its duplicate event/delivery)
- * and replays the committed record. This is what makes "20 concurrent identical
- * publications produce exactly one event and one delivery" true.
- *
- * Failures BEFORE a record is written (validation, ownership, 413) never consume
- * the key: the record is only inserted in the same transaction as the work.
+ * Concurrency model: the key is CLAIMED (inserted) inside the same transaction
+ * as the work, before the work runs. The UNIQUE(tenant_id, operation,
+ * idempotency_key) index then serializes duplicates - a concurrent request with
+ * the same key blocks on the claim, loses with SQLSTATE 23505 once the winner
+ * commits, and replays the winner's stored response. Because the claim and the
+ * work share one transaction, a request that fails validation (or finds the
+ * resource missing) rolls the claim back too: a failed call never consumes the
+ * key.
  */
 export class IdempotencyService {
   constructor(private readonly db: Database) {}
@@ -84,8 +84,18 @@ export class IdempotencyService {
         if (existing) {
           return this.replayOrConflict<T>(existing, params.requestHash);
         }
+
+        // Claim the key BEFORE doing the work. A concurrent request with the
+        // same key blocks on the unique index here and, once the winner commits,
+        // takes the 23505 path below and replays - instead of racing to redo the
+        // work and then failing a state precondition that the winner already
+        // consumed (which would surface as a spurious 409).
+        const recordId = newUuid();
+        await this.claimRecord(client, recordId, params);
+
         const result = await work(client);
-        await this.insertRecord(client, params, result);
+
+        await this.finalizeRecord(client, recordId, result);
         return { status: result.status, body: result.body, replayed: false };
       });
     } catch (err) {
@@ -110,26 +120,36 @@ export class IdempotencyService {
     return rows[0];
   }
 
-  private async insertRecord<T>(
+  /**
+   * Write the key claim. `response_status`/`response_body` are NOT NULL, so the
+   * claim carries placeholders that `finalizeRecord` overwrites in the same
+   * transaction: no other session can observe them, because the row is invisible
+   * until this transaction commits.
+   */
+  private async claimRecord(
     client: PoolClient,
+    recordId: string,
     params: { tenantId: string; operation: string; key: string; requestHash: string },
-    result: IdempotentWorkResult<T>,
   ): Promise<void> {
     await client.query(
       `INSERT INTO idempotency_records
          (id, tenant_id, operation, idempotency_key, request_hash,
           response_status, response_body, resource_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [
-        newUuid(),
-        params.tenantId,
-        params.operation,
-        params.key,
-        params.requestHash,
-        result.status,
-        JSON.stringify(result.body),
-        result.resourceId ?? null,
-      ],
+       VALUES ($1, $2, $3, $4, $5, 0, 'null'::jsonb, NULL)`,
+      [recordId, params.tenantId, params.operation, params.key, params.requestHash],
+    );
+  }
+
+  private async finalizeRecord<T>(
+    client: PoolClient,
+    recordId: string,
+    result: IdempotentWorkResult<T>,
+  ): Promise<void> {
+    await client.query(
+      `UPDATE idempotency_records
+          SET response_status = $2, response_body = $3, resource_id = $4
+        WHERE id = $1`,
+      [recordId, result.status, JSON.stringify(result.body), result.resourceId ?? null],
     );
   }
 

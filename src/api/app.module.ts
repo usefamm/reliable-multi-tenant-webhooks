@@ -4,6 +4,7 @@ import { CoreModule } from './core.module';
 import { AuthModule } from '../modules/auth/auth.module';
 import { EventsModule } from '../modules/events/events.module';
 import { DeliveriesModule } from '../modules/deliveries/deliveries.module';
+import { OperationsModule } from '../modules/operations/operations.module';
 import { HealthController } from './health.controller';
 import { AllExceptionsFilter } from './exception.filter';
 
@@ -14,7 +15,7 @@ import { AllExceptionsFilter } from './exception.filter';
  * applied in http-setup (see configureHttp/finalizeHttp) so they wrap the router.
  */
 @Module({
-  imports: [CoreModule, AuthModule, EventsModule, DeliveriesModule],
+  imports: [CoreModule, AuthModule, EventsModule, DeliveriesModule, OperationsModule],
   controllers: [HealthController],
   providers: [{ provide: APP_FILTER, useClass: AllExceptionsFilter }],
 })

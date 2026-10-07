@@ -2,15 +2,24 @@ import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from '../../src/api/app.module';
+import { CLOCK } from '../../src/api/tokens';
 import { configureHttp } from '../../src/api/http-setup';
+import type { Clock } from '../../src/common/clock';
 
 /**
  * Build the API app for supertest, mirroring production bootstrap exactly:
  * request-id -> 64 KiB body parser -> routes. Returns an initialized app the
  * caller must close.
+ *
+ * `clock` overrides the API's time source. Tests that combine the API with a
+ * worker loop must share ONE clock: a redrive schedules `next_attempt_at` from
+ * the API's clock, and the loop's worker only claims work that is due according
+ * to its own. Two different clocks make the delivery permanently underived.
  */
-export async function createTestApp(): Promise<INestApplication> {
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+export async function createTestApp(opts: { clock?: Clock } = {}): Promise<INestApplication> {
+  const tester = Test.createTestingModule({ imports: [AppModule] });
+  if (opts.clock) tester.overrideProvider(CLOCK).useValue(opts.clock);
+  const moduleRef = await tester.compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
   configureHttp(app);
   await app.init();

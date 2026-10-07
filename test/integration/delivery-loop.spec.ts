@@ -12,6 +12,7 @@ import { ReceiverMode } from '../../src/receiver/repository';
 import { BASE_MS } from '../helpers/worker';
 import { startReceiver, type ReceiverApp } from '../helpers/receiver';
 import { startLoop, type DeliveryLoop, type LoopOptions } from '../helpers/delivery-loop';
+import { resetDatabase } from '../helpers/db';
 import { SEED, TEST_DATABASE_URL } from '../helpers/test-env';
 
 const SECOND = 1_000;
@@ -21,8 +22,11 @@ describe('delivery loop: retry scheduling and recovery', () => {
   let loops: DeliveryLoop[] = [];
 
   beforeEach(async () => {
+    // Own baseline: this suite inserts endpoints and deliveries that reference
+    // the seeded tenant, so it re-asserts the seed instead of trusting whatever
+    // suite ran before it (jest does not fix file order).
+    await resetDatabase();
     receiver = await startReceiver({ databaseUrl: TEST_DATABASE_URL });
-    await receiver.repo.resetAll();
     receiver.clock.set(BASE_MS);
     loops = [];
   });
