@@ -54,7 +54,8 @@ Everything below is implemented, tested and runnable. Test results quoted are ac
 33. [Production considerations](#33-production-considerations)
 34. [Discussion topics the brief asks about](#34-discussion-topics-the-brief-asks-about)
 35. [Repository layout](#35-repository-layout)
-36. [Time spent and disclosure](#36-time-spent-and-disclosure)
+36. [Postman collection](#36-postman-collection)
+37. [Time spent and disclosure](#37-time-spent-and-disclosure)
 
 ---
 
@@ -202,6 +203,9 @@ image-only services made Compose attempt a registry pull of the local-only tag a
 (`x-build` anchor). The one thing that could not be exercised is `up --build` itself, because buildx is
 blocked by a root-owned `~/.docker/buildx/current` on this machine (§32, item 14) - the image was built
 with the classic builder and started with `--no-build`.
+
+Once the stack is up, [the Postman collection](#36-postman-collection) is the fastest way to walk the whole
+API surface instead of hand-writing `curl` calls.
 
 ---
 
@@ -558,6 +562,9 @@ no fake timers):
 | redrive with the operator token | `202 {"state":"READY","cycle":2,"attemptCount":1,"attemptsInCycle":0,…}` - lifetime attempts preserved, cycle budget refilled |
 | after that redrive | `DELIVERED`, `totalAttempts 2`, `cycle 2`; receiver side: **2** requests for the event, **1** effect |
 | `GET /ops/status` at rest | all counters consistent with the rows (`delivered 3`, `ready/inFlight/retryWait/dead 0`, `expiredLeases 0`) |
+
+This whole sequence - publish, fail, retry, reject, redrive - is packaged as runnable, asserted requests in
+[the Postman collection](#36-postman-collection), folder `06`.
 
 ---
 
@@ -1270,10 +1277,16 @@ Time:        15.564 s
 This is the run that immediately follows the failed bare-`npx jest` attempt recorded in §4, on the tree
 after the final audit fixes - so the number describes the shipped code, not an earlier snapshot of it.
 The suite and test counts are deterministic; the wall-clock moves by a second or two between runs (the
-runs recorded here measured 16.1 s, 17.0 s under `--coverage` and 15.6 s).
+runs recorded here measured 16.1 s, 17.0 s under `--coverage`, 15.6 s, and 16.2 s re-run after the Postman
+collection was added - the collection itself is not in that count).
 
 `npm run typecheck` (tsc over src **and** test): clean. `npm run lint` (ESLint, `no-unused-vars` as
 error, explicit module boundaries): clean. `npm run build`: clean.
+
+The [Postman collection](#36-postman-collection) is separate, manual evidence and is **not** part of
+`npm test`. Run against the live four-process host stack with `npx newman@6`: 77 request executions, 77
+assertions, 0 failed. The executed-request count moves between runs because two requests poll for
+asynchronous states; `0 failed` is the claim, not the total.
 
 Per suite:
 
@@ -1531,6 +1544,8 @@ docs/             IMPLEMENTATION_PLAN.md, DESIGN.md
 Dockerfile        multi-stage: build -> prune dev deps -> runtime as non-root
 docker-compose.yml  postgres + bootstrap + api + worker-a + worker-b + receiver
 .env.example      every variable, placeholders only, no real credential
+postman/          webhook-delivery.postman_collection.json (63 requests, all asserted)
+                  webhook-delivery-local.postman_environment.json (non-secret values only)
 ```
 
 Dependency direction is deliberate: `common` → `db`/`config` → `domain` → `modules` → `api`/`worker` /
@@ -1539,7 +1554,113 @@ Dependency direction is deliberate: `common` → `db`/`config` → `domain` → 
 
 ---
 
-## 36. Time spent and disclosure
+## 36. Postman collection
+
+`postman/webhook-delivery.postman_collection.json` is a Collection v2.1 file that exercises every route
+the service exposes, from both sides of the wire: **63 requests across 8 folders, and every one of them
+carries test assertions** (no click-and-eyeball requests). It is the same surface the automated suite
+covers, but readable as a script of what a reviewer can do by hand after `docker compose up`.
+
+| Folder | What it proves |
+|---|---|
+| `00 Health & readiness` | API and receiver are separate processes, each with its own `/health` |
+| `01 Publish + idempotency` | 202 with exactly four keys, byte-identical replay, 409 on a reused key with a different body, 400 without the header, 401 without a token |
+| `02 Event status + tenant isolation` | owner reads 200, other tenant reads **404** (no existence leak), never-published UUID 404, malformed id 404, operator token 403 |
+| `03 Delivery listing (keyset pages)` | page 1 → `nextCursor` → page 2, state filter, tenant B sees only its own rows, 400 on `limit=101` / bogus state / garbage cursor |
+| `04 Payload + outbound security contract` | caller-supplied `url` and caller-supplied secret are **rejected**, non-object payload rejected, over-long `eventType` rejected, another tenant's endpoint 404, >64 KiB body 413 |
+| `05 Drive the retry engine (receiver failure modes)` | arms `temp_failure` for three counted attempts, publishes a probe event, reads its delivery snapshot and then `/__control/requests` to prove the retries physically arrived; then arms `rate_limited` (with `Retry-After: 30`), `perm_failure`, `lost_response`, `slow`, `reject_400` and `redirect` in turn, and finally disarms. Those six assert that the control plane accepted the mode - see the note below on why they are not each driven to a terminal state |
+| `06 Operator: queue status + redrive` | `/ops/status` authorization matrix, then a full DEAD → redrive → DELIVERED cycle: arm `reject_400`, publish a doomed event, wait for DEAD **on exactly one attempt**, capture the id, disarm, redrive once, replay the same `Idempotency-Key` and assert the cycle counter did **not** move, then 409 on a non-DEAD delivery and 403/400/404 on the redrive route |
+| `07 Receiver: signature + dedup, called directly` | the receiver's own contract, bypassing the worker: a correctly signed call applies the effect, the same ids on a new attempt return 200 **deduplicated**, the same ids with different content return 409 `content_conflict`, a bad signature and a stale timestamp both return 401, an unknown endpoint returns 401 |
+
+### What is prefilled, and what is deliberately empty
+
+Nothing secret is committed. Five variables ship with values - `baseUrl`, `receiverUrl`, and the three
+seeded endpoint UUIDs (`endpointA1`, `endpointA2`, `endpointB1`), which are deployment data the seed
+writes and are not credentials. The four variables that hold credentials ship **empty on purpose**:
+
+| Variable | Where to get it |
+|---|---|
+| `tenantAToken` | `TENANT_A_TOKEN` in your local `.env` (or `src/db/seed.ts` for the default) |
+| `tenantBToken` | `TENANT_B_TOKEN` |
+| `operatorToken` | `OPERATOR_TOKEN` |
+| `endpointA1Secret` | `ENDPOINT_A1_SECRET` - folder 07 HMACs its own request bodies with it |
+
+Requests read all four with `pm.variables.get(...)` rather than `pm.collectionVariables.get(...)`, so the
+value can come from either the collection layer or an environment layer. `postman/webhook-delivery-local.postman_environment.json`
+declares only the non-secret keys; it omits the credential keys entirely on purpose, because an *empty*
+environment variable would shadow a filled collection variable and produce a confusing wall of 401s.
+
+### Running it
+
+1. Start the stack (`docker compose up`, or the host run in [section 4](#4-quick-start-without-docker)) and seed it.
+2. Import both files into Postman, select the imported environment, and paste the four credential values into the collection variables.
+3. Run folders `00` → `07` **in order**. Order is load-bearing: each folder stores ids (`eventId`, `deliveryId`, `deadDeliveryId`, cursors) that later requests consume, and folders 05/06 arm receiver failure modes they also disarm.
+
+Headless, the same run is CI-shaped without being part of CI:
+
+```bash
+npx newman run postman/webhook-delivery.postman_collection.json \
+  -e postman/webhook-delivery-local.postman_environment.json \
+  --env-var "tenantAToken=$TENANT_A_TOKEN" \
+  --env-var "tenantBToken=$TENANT_B_TOKEN" \
+  --env-var "operatorToken=$OPERATOR_TOKEN" \
+  --env-var "endpointA1Secret=$ENDPOINT_A1_SECRET"
+```
+
+### Three things in the scripts worth explaining
+
+**Waiting is a loop, not a sleep.** The delivery lifecycle is asynchronous, so folder 06 has to observe
+states the worker produces after the request returns (a delivery reaching DEAD, then the redriven delivery
+landing). Those two requests re-enter themselves via `setNextRequest` until the expected state appears,
+capped at 200 polls. While still waiting they emit a *soft* test (`still waiting on the worker (poll N)`)
+that only asserts the state is one of `READY / IN_FLIGHT / RETRY_WAIT / DEAD`, and on the final iteration
+they assert the real expectation (`state DEAD` with `totalAttempts 1` and `lastErrorCode "http_400"`, or
+`DELIVERED` on a higher cycle after redrive). A timeout therefore fails loudly on the assertion instead of
+passing because the sleep happened to be long enough. Folder 05 takes the lighter approach: its poll
+request reads the delivery once, logs the whole progression line to the console, and asserts only that the
+state is one of the five documented values - enough to make the retry engine's work visible in the run
+output without depending on which attempt the run happened to catch. `pm.setNextRequest` does not exist in
+newman's sandbox (only the deprecated `postman.setNextRequest` does), so the scripts feature-detect both;
+that is the one place the collection is written for two runtimes rather than one.
+
+**Folder 06 creates its own precondition.** Rather than assuming a DEAD row exists in the database, it
+arms `reject_400` on the receiver, publishes an event whose first attempt is therefore non-retryable, and
+waits for exactly that delivery to reach DEAD with `totalAttempts 1` and `lastErrorCode "http_400"`. It
+disarms *after* DEAD is observed, never before - an earlier version of this collection raced its own
+cleanup, and the doomed delivery got rescued by the worker on a second attempt.
+
+**Why folder 05 arms six modes without driving each to a terminal state.** The receiver stores one
+endpoint-wide mode row keyed `(endpoint_id, '')` with `ON CONFLICT DO UPDATE`, so arming the next mode
+overwrites the previous one: a single automated pass can only exercise the mode that is in effect when an
+event is published, which here is `temp_failure`. The other six are a menu for hands-on use - in Postman,
+run one arm request, then run folder 05's `POST /events - probe event` and watch folder 06's wait pattern
+against it. Each of those behaviours *is* proven to a terminal state, but in the deterministic suites
+([section 28](#28-testing-strategy-determinism-without-mocks) and the
+[acceptance map](#30-acceptance-evidence-map-pdf-tests-1-9)), which use fake clocks to assert the exact
+backoff without waiting 30 s for a real `Retry-After`. Reproducing all six end to end in the collection
+would mean tens of seconds of wall-clock backoff per run, and one flakier duplicate of an assertion the
+suite already makes - so the collection stops at showing the control plane accepts each mode.
+
+### What a repeat run does to the database
+
+The collection never deletes API-side rows, so running it repeatedly accumulates events and deliveries
+(and folder 06's `state=DEAD` capture stays correct because it filters by state). `POST /__control/reset`
+on the receiver clears receiver-side request/effect state; the API side is cleared by rebuilding the
+schema (`npm run migrate:down && npm run migrate:up && npm run seed`). The suite in
+[section 28](#28-testing-strategy-determinism-without-mocks) is the one that guarantees isolation, since
+`test/global-setup.ts` drops and recreates its database on every run - the collection is a demonstration
+tool, not a test oracle.
+
+Measured again with newman 6.2.2 against the running four-process host stack on this machine, immediately
+before committing these files: **77 request executions, 77 test-scripts, 77 assertions, 0 failed**, total
+run duration 1340 ms, exit code 0. The executed count is above 63 because the two wait loops re-enter
+themselves - this run spent **14** of those executions on soft `still waiting on the worker (poll N)`
+iterations before the terminal states appeared, so treat the request total as run-dependent and the
+`failed 0` as the number that matters.
+
+---
+
+## 37. Time spent and disclosure
 
 **Wall-clock** (from the git history, checkable with `git log --format='%ci %s'`):
 

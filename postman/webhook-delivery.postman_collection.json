@@ -1,0 +1,2848 @@
+{
+  "info": {
+    "_postman_id": "6c2f1b70-3f4a-4d8e-9a11-70e5c0d1b2f4",
+    "name": "Reliable Multi-Tenant Webhook Delivery",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Every route of the service, plus the negative paths that ARE the guarantees.\n\nImport this file (Import -> File), pick the shipped `Webhook delivery (local)` environment, then run `00 Health & readiness`. Requests read back collection variables (`eventId`, `deadDeliveryId`, ...) written by the request before them, so the first pass should run folders in order.\n\nFour values are yours to supply and the file deliberately contains none of them: `tenantAToken`, `tenantBToken`, `operatorToken`, `endpointA1Secret`. Put them in the environment (or on the Newman command line with --env-var) using the dev fixtures your local `.env` and seed already define - they are development fixtures that live in `src/db/seed.ts`, and a committed Postman export should not restate them.\n\nHeadless, against a running local stack:\n\n    npx newman run postman/webhook-delivery.postman_collection.json \\\n      -e postman/webhook-delivery-local.postman_environment.json \\\n      --env-var \"tenantAToken=...\" --env-var \"tenantBToken=...\" \\\n      --env-var \"operatorToken=...\" --env-var \"endpointA1Secret=...\"\n\nFolders 00-04 and 06-07 are self-contained: folder 06 arms a non-retryable receiver failure, publishes into it, waits for DEAD, redrives and waits for DELIVERED. Folder 05 is the slow one on purpose - the 500/retry path is five backoff cycles over ~31s - so those requests are meant to be sent by hand while you watch. The two wait-loops use `pm.setNextRequest` rather than a fixed sleep, so a slower machine never produces a fake failure."
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:3000",
+      "type": "string"
+    },
+    {
+      "key": "receiverUrl",
+      "value": "http://127.0.0.1:4000",
+      "type": "string"
+    },
+    {
+      "key": "tenantAToken",
+      "value": "",
+      "type": "string",
+      "description": "TENANT_A_TOKEN from your local .env"
+    },
+    {
+      "key": "tenantBToken",
+      "value": "",
+      "type": "string",
+      "description": "TENANT_B_TOKEN from your local .env"
+    },
+    {
+      "key": "operatorToken",
+      "value": "",
+      "type": "string",
+      "description": "OPERATOR_TOKEN from your local .env"
+    },
+    {
+      "key": "endpointA1Secret",
+      "value": "",
+      "type": "string",
+      "description": "webhook_secret of endpointA1, from src/db/seed.ts - only needed by folder 07"
+    },
+    {
+      "key": "endpointA1",
+      "value": "eeeeeeee-0000-4000-8000-0000000000a1",
+      "type": "string"
+    },
+    {
+      "key": "endpointA2",
+      "value": "eeeeeeee-0000-4000-8000-0000000000a2",
+      "type": "string"
+    },
+    {
+      "key": "endpointB1",
+      "value": "eeeeeeee-0000-4000-8000-0000000000b1",
+      "type": "string"
+    },
+    {
+      "key": "idempotencyKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "probeIdempotencyKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "redriveKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "eventId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "deliveryId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "probeEventId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "probeDeliveryId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "nextCursor",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "firstPageLastId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "deadDeliveryId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "deadCycle",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "redriveCycle",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "longEventType",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "oversizedBlob",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "manualEnvelope",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "manualEventId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "manualDeliveryId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "manualAttemptId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "manualTimestamp",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "manualSignature",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "tamperedEnvelope",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "doomedEventId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "doomedDeliveryId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "healthyEventId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "healthyDeliveryId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "doomedKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "healthyKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "deadWaitTries",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "00 Health & readiness",
+      "item": [
+        {
+          "name": "GET /health (no token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200, and the database actually answered', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.status).to.eql('ok');",
+                  "  pm.expect(b.database).to.eql('ok');",
+                  "  pm.expect(b.uptimeSec).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health",
+            "description": "The only `@Public()` API route. It runs `SELECT 1` through the pool, so 200 means a connection was acquired - it is a readiness probe, not a liveness echo. When Postgres is unreachable the same route answers 503 `service_unavailable`; the driver error names host, port and user, so it is logged server-side and never returned."
+          }
+        },
+        {
+          "name": "GET receiver /health (separate process)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('receiver is up on its own port', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{receiverUrl}}/health",
+            "description": "The mock receiver is an independent process with its own entrypoint and port, deliberately not part of the API: it stands in for a customer endpoint, so it must be able to fail, be slow and be inspected without touching the service under test."
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 Publish + idempotency",
+      "item": [
+        {
+          "name": "POST /events - publish (202 Accepted)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh key per run, so sending this request always creates exactly one event.",
+                  "pm.collectionVariables.set('idempotencyKey', 'postman-publish-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 with exactly the four documented fields', function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.status).to.eql('READY');",
+                  "  pm.expect(b.statusUrl).to.eql('/events/' + b.eventId);",
+                  "  pm.expect(Object.keys(b).sort()).to.eql(['deliveryId', 'eventId', 'status', 'statusUrl']);",
+                  "  pm.collectionVariables.set('eventId', b.eventId);",
+                  "  pm.collectionVariables.set('deliveryId', b.deliveryId);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"order.paid\",\n  \"payload\": { \"orderId\": \"ord-1007\", \"amount\": 4999, \"currency\": \"USD\" }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "202 means durably accepted, not delivered: event row, delivery row and the exact envelope bytes are written in one transaction, and the worker picks it up asynchronously. The response body is the whole contract - no destination URL and no secret can come back, because the caller never supplied either. Identity comes from the bearer token; there is no tenantId field to lie about."
+          }
+        },
+        {
+          "name": "POST /events - same key, same body (202 replay, no second event)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the original response is replayed verbatim', function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.eventId).to.eql(pm.collectionVariables.get('eventId'));",
+                  "  pm.expect(b.deliveryId).to.eql(pm.collectionVariables.get('deliveryId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"order.paid\",\n  \"payload\": { \"orderId\": \"ord-1007\", \"amount\": 4999, \"currency\": \"USD\" }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "Send this right after the publish request without editing anything. Dedup is keyed on (tenant, operation, key) and the compared fingerprint is SHA-256 over canonical JSON of {endpointId,eventType,payload}, so re-ordering object keys in the body still replays - array order does still matter. The stored HTTP status is replayed too, which is why the retry sees 202 rather than a fresh 201-ish answer."
+          }
+        },
+        {
+          "name": "POST /events - same key, different payload (409 conflict)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 conflict, not a silent second event', function () {",
+                  "  pm.response.to.have.status(409);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.code).to.eql('conflict');",
+                  "  pm.expect(b.requestId).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"order.paid\",\n  \"payload\": { \"orderId\": \"ord-1007\", \"amount\": 5000, \"currency\": \"USD\" }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "A key is a claim about one specific request. Replaying a different body would lie, and accepting it would deliver a webhook the caller never agreed to send, so the only honest answer is 409. The amount is the only difference from the previous request: the fingerprint covers the whole {endpointId,eventType,payload} triple."
+          }
+        },
+        {
+          "name": "POST /events - no Idempotency-Key header (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 bad_request: dedup is not opt-in', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().code).to.eql('bad_request');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"order.paid\",\n  \"payload\": { \"orderId\": \"ord-no-key\" }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "Publication dedup is a core guarantee, so the header is required rather than recommended. Whitespace-only keys and keys longer than 200 characters are rejected the same way. Note that this 400 did NOT consume the key: validation happens before the key is claimed, and a failed call rolls its claim back."
+          }
+        },
+        {
+          "name": "POST /events - no token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 unauthorized', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().code).to.eql('unauthorized');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-anon-1"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"order.paid\",\n  \"payload\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "The guard is global: a route is authenticated unless it is explicitly marked public, so a future endpoint cannot accidentally ship unauthenticated. Tokens are looked up by SHA-256 hash, never compared as plaintext."
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 Event status + tenant isolation",
+      "item": [
+        {
+          "name": "GET /events/:id - owner reads it back (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var b = pm.response.json();",
+                  "console.log('eventId=' + b.eventId + ' state=' + b.delivery.state + ' attempts=' + b.delivery.totalAttempts);",
+                  "pm.test('200 with the delivery projection', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(b.eventId).to.eql(pm.collectionVariables.get('eventId'));",
+                  "  pm.expect(b.delivery.state).to.be.oneOf(['READY', 'IN_FLIGHT', 'RETRY_WAIT', 'DELIVERED', 'DEAD']);",
+                  "  pm.expect(b.delivery.totalAttempts).to.be.at.least(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/events/{{eventId}}",
+            "description": "One tenant-scoped read: event metadata plus the live delivery state, which answers the only question a caller has - \"what happened to my event?\". `statusUrl` from the 202 points here. Retry the request a few seconds later to watch READY -> IN_FLIGHT -> DELIVERED."
+          }
+        },
+        {
+          "name": "GET /events/:id - other tenant gets 404 (no existence leak)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 not_found, identical to an unknown id', function () {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().code).to.eql('not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantBToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/events/{{eventId}}",
+            "description": "Tenant B probing an id that exists and belongs to A gets the exact same response as a never-published id. The ownership check is `WHERE e.id = $1` then a compare in code: nothing about the row is revealed on the mismatch path. Send the next request to compare the two bodies byte for byte."
+          }
+        },
+        {
+          "name": "GET /events/:id - valid UUID that was never published (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 is indistinguishable from the cross-tenant 404', function () {",
+                  "  pm.response.to.have.status(404);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.code).to.eql('not_found');",
+                  "  pm.expect(b.message).to.eql('Event not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/events/00000000-0000-4000-8000-000000000000",
+            "description": "Same status, same `code`, same `message` as the cross-tenant probe - only `requestId` differs. That is the point: an attacker enumerating ids gets no signal about which ids exist."
+          }
+        },
+        {
+          "name": "GET /events/:id - malformed id (404, not 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 without touching the database', function () {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().code).to.eql('not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/events/not-a-uuid",
+            "description": "A malformed id in a PATH position can never name a resource, so it is 404 - deliberately not 400, because answering 400 would tell the caller the id was shaped like someone else's resource. Contrast with folder 04: a malformed `endpointId` in a request BODY is 400, because there it is the caller's input being validated, not an address being resolved."
+          }
+        },
+        {
+          "name": "GET /events/:id - operator token rejected (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 forbidden: operators are not tenants', function () {",
+                  "  pm.response.to.have.status(403);",
+                  "  pm.expect(pm.response.json().code).to.eql('forbidden');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{operatorToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/events/{{eventId}}",
+            "description": "Privilege levels never mix: an operator token cannot read tenant-scoped resources any more than a tenant token can redrive. The guard rejects this before the handler runs, so no query is issued and no timing signal about the row is given."
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 Delivery listing (keyset pages)",
+      "item": [
+        {
+          "name": "GET /deliveries - first page (limit=5)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('page shape + cursor captured', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.data).to.be.an('array');",
+                  "  pm.expect(b.pagination.limit).to.eql(5);",
+                  "  pm.collectionVariables.set('nextCursor', b.pagination.nextCursor || '');",
+                  "  var last = b.data[b.data.length - 1];",
+                  "  if (last) {",
+                  "    pm.collectionVariables.set('firstPageLastId', last.deliveryId);",
+                  "    pm.expect(Object.keys(last).sort()).to.eql([",
+                  "      'attemptCount', 'attemptsInCycle', 'createdAt', 'cycle', 'deliveryId', 'endpointId',",
+                  "      'eventId', 'lastErrorCode', 'lastHttpStatus', 'nextAttemptAt', 'state', 'updatedAt'",
+                  "    ]);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries?limit=5",
+            "description": "Ordering is (created_at DESC, id DESC) and served by the `deliveries_tenant_created_idx` index. Keyset, not OFFSET: a page stays correct while workers mutate rows underneath it, and `id` breaks ties when many rows share a timestamp. `nextCursor` is opaque base64url JSON - not a security boundary and not stable across tenants."
+          }
+        },
+        {
+          "name": "GET /deliveries - second page via cursor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the cursor page excludes the previous page', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var cursor = pm.collectionVariables.get('nextCursor');",
+                  "  var prev = pm.collectionVariables.get('firstPageLastId');",
+                  "  if (!cursor || !prev) {",
+                  "    console.log('Run \"first page (limit=5)\" first, against a tenant with more than 5 deliveries.');",
+                  "    return;",
+                  "  }",
+                  "  var ids = pm.response.json().data.map(function (d) { return d.deliveryId; });",
+                  "  pm.expect(ids).to.not.include(prev);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries?limit=1&cursor={{nextCursor}}",
+            "description": "Run the first-page request before this one; it writes `nextCursor`. The service reads limit+1 rows and only returns a cursor when a row was left over, which is why an empty `nextCursor` means the end of the feed."
+          }
+        },
+        {
+          "name": "GET /deliveries?state=DELIVERED - state filter",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('only DELIVERED rows come back', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var rows = pm.response.json().data;",
+                  "  rows.forEach(function (d) { pm.expect(d.state).to.eql('DELIVERED'); });",
+                  "  if (!rows.length) console.log('Nothing DELIVERED for this tenant yet.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries?state=DELIVERED&limit=100",
+            "description": "A partial index per hot query is the whole point of the schema: `deliveries_due_idx` covers the worker (READY/RETRY_WAIT ordered by next_attempt_at) and `deliveries_tenant_state_idx` covers this listing. `state` must be one of the five documented states - an unknown value is a 400, never an empty page that looks like \"nothing in that state\". Redrive targets are found in folder 06, where the DEAD row is produced on purpose."
+          }
+        },
+        {
+          "name": "GET /deliveries?state=DEAD - capture a redrive target",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('capture a DEAD delivery for folder 06', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var row = pm.response.json().data[0];",
+                  "  if (!row) {",
+                  "    console.log('No DEAD delivery yet: run folder 05 (perm_failure or reject_400) until attempts_in_cycle reaches 5.');",
+                  "    return;",
+                  "  }",
+                  "  pm.expect(row.state).to.eql('DEAD');",
+                  "  pm.collectionVariables.set('deadDeliveryId', row.deliveryId);",
+                  "  pm.collectionVariables.set('deadCycle', String(row.cycle));",
+                  "  console.log('DEAD delivery ' + row.deliveryId + ' at cycle ' + row.cycle + ', last error ' + row.lastErrorCode);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries?state=DEAD&limit=1",
+            "description": "DEAD is terminal and it is not an error: the attempt history says exactly why the receiver was unreachable. Listing a tenant's own DEAD deliveries is how a support engineer finds the id to hand to an operator, because redrive itself is operator-only."
+          }
+        },
+        {
+          "name": "GET /deliveries - as tenant B (isolation)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"tenant B never sees tenant A's rows\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var ids = pm.response.json().data.map(function (d) { return d.deliveryId; });",
+                  "  pm.expect(ids).to.not.include(pm.collectionVariables.get('deliveryId'));",
+                  "  pm.expect(ids).to.not.include(pm.collectionVariables.get('probeDeliveryId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantBToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries?limit=100",
+            "description": "There is no `tenantId` query parameter to forge - scope comes from the principal and is applied in SQL (`WHERE tenant_id = $1`). Tenant B sees its own rows, including its own DEAD ones, and nothing else."
+          }
+        },
+        {
+          "name": "GET /deliveries?limit=101 - over max page size (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400: the documented maximum is refused, not silently clamped', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().code).to.eql('bad_request');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries?limit=101",
+            "description": "MAX_PAGE_SIZE is 100, default 50. Out-of-range or non-integer limits are 400 rather than silently clamped, because a caller who asks for 10000 and gets 100 has been lied to. `limit=0` and `limit=-1` behave the same way."
+          }
+        },
+        {
+          "name": "GET /deliveries?state=BOGUS - invalid state (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 bad_request', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().code).to.eql('bad_request');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries?state=BOGUS",
+            "description": "Rejected against the enum in code, before any SQL is built. An unknown state returning an empty page would be indistinguishable from \"no deliveries in that state\"."
+          }
+        },
+        {
+          "name": "GET /deliveries?cursor=garbage - invalid cursor (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 bad_request', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().code).to.eql('bad_request');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries?cursor=not-a-real-cursor",
+            "description": "Decoding the cursor can fail three ways - not base64url JSON, missing fields, or a timestamp that does not parse. All become one 400. The cursor is untrusted input: it is decoded, validated, and then used only as bind parameters, never spliced into SQL."
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 Payload + outbound security contract",
+      "item": [
+        {
+          "name": "POST /events - caller-supplied url (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400: the destination is not a caller input', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().code).to.eql('bad_request');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-url-1"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"order.paid\",\n  \"payload\": { \"orderId\": \"ord-ssrf\" },\n  \"url\": \"http://169.254.169.254/latest/meta-data/\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "The top-level schema is `.strict()` on purpose. Ignoring an unknown `url` would let a caller believe they had pointed the delivery at the cloud metadata endpoint; rejecting it says the destination comes from the `endpoints` table and nowhere else. Same for `secret`, `destination` or any other invented field - while `payload` itself stays open, because customer business data is arbitrary by definition."
+          }
+        },
+        {
+          "name": "POST /events - caller-supplied signing secret (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400: secrets are deployment-owned', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().code).to.eql('bad_request');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-secret-1"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"order.paid\",\n  \"payload\": { \"orderId\": \"ord-secret\" },\n  \"secret\": \"attacker-chosen-secret\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "If a caller could supply the signing secret, they could forge deliveries for anyone. The HMAC key lives only in `endpoints.webhook_secret`, written by deployment configuration, and is never read back out through any API."
+          }
+        },
+        {
+          "name": "POST /events - array payload (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400: object-only payload contract', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().code).to.eql('bad_request');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-array-1"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"order.paid\",\n  \"payload\": [1, 2, 3]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "The specification says a JSON object payload, so an array or a scalar is a 400 rather than a judgement call. It also keeps the two consumers simple: the envelope embeds `payload` as one field of a JSON object, and the idempotency fingerprint is canonical JSON over the triple that contains it."
+          }
+        },
+        {
+          "name": "POST /events - eventType longer than 100 chars (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 at the API, before the CHECK constraint could', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().code).to.eql('bad_request');",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 101 characters: one over the documented maximum.",
+                  "pm.collectionVariables.set('longEventType', 'x' + 'y'.repeat(100));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-longtype-1"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"{{longEventType}}\",\n  \"payload\": { \"orderId\": \"ord-long\" }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "Bounded here twice: the API validates <=100 characters, and `events_event_type_len CHECK (char_length(event_type) BETWEEN 1 AND 100)` holds the line even if a future code path forgets to. An unbounded event type would end up as an unbounded index key and an unbounded cardinality in every metric."
+          }
+        },
+        {
+          "name": "POST /events - endpoint of another tenant (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 not_found: cannot publish into another tenant', function () {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().code).to.eql('not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-cross-tenant-1"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointB1}}\",\n  \"eventType\": \"order.paid\",\n  \"payload\": { \"orderId\": \"ord-steal\" }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "Tenant A aiming at tenant B's endpoint. The lookup is `WHERE id = $1 AND tenant_id = $2`, so the row is simply not found - the same 404 as an id that does not exist at all. Otherwise tenant A could pay for webhooks delivered to tenant B's receiver, with tenant B's secret."
+          }
+        },
+        {
+          "name": "POST /events - malformed endpointId (400, contrast with 02)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 because this is input validation, not address resolution', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().code).to.eql('bad_request');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-bad-uuid-1"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"definitely-not-a-uuid\",\n  \"eventType\": \"order.paid\",\n  \"payload\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "The one place the two 404/400 rules meet. A malformed UUID in a body is the caller's mistake, so 400 and it never reaches the idempotency claim. A malformed UUID in a path is 404, because there the shape only tells you the address cannot resolve. Getting this backwards in either direction is what makes an API feel random to use."
+          }
+        },
+        {
+          "name": "POST /events - body larger than 64 KiB (413)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 70,000 bytes of filler: over the 64 KiB body limit (65,536 bytes).",
+                  "pm.collectionVariables.set('oversizedBlob', 'A'.repeat(70000));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('413 payload_too_large from the body parser', function () {",
+                  "  pm.response.to.have.status(413);",
+                  "  pm.expect(pm.response.json().code).to.eql('payload_too_large');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-oversize-1"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"bulk.demo\",\n  \"payload\": { \"blob\": \"{{oversizedBlob}}\" }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "Enforced by the express JSON parser (`MAX_BODY_BYTES = 64 * 1024`) before the schema ever runs, so an oversized body costs one read and no validation work. The 413 arrives from a thrown `entity.too.large`, which the global filter maps into the same `{code,message,requestId}` envelope as every other error - a client can parse failures and successes with one code path."
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 Drive the retry engine (receiver failure modes)",
+      "item": [
+        {
+          "name": "PUT /__control/modes - temp_failure x3, then success",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mode armed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"mode\": \"temp_failure\",\n  \"remaining\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/__control/modes",
+            "description": "Answers 503 for the next 3 calls to this endpoint, then falls back to success. 5xx is RETRYABLE, so the delivery goes READY -> IN_FLIGHT -> RETRY_WAIT and back, three times, then DELIVERED. Omitting `eventId` means endpoint-wide (`event_id = ''` sentinel); pass `\"eventId\": \"{{probeEventId}}\"` to confine it to one event."
+          }
+        },
+        {
+          "name": "POST /events - probe event (its own key)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('probeIdempotencyKey', 'postman-probe-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 + probe ids captured', function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.status).to.eql('READY');",
+                  "  pm.collectionVariables.set('probeEventId', b.eventId);",
+                  "  pm.collectionVariables.set('probeDeliveryId', b.deliveryId);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{probeIdempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"retry.demo\",\n  \"payload\": { \"probe\": true }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/events",
+            "description": "Publishes into its own variables so the retry experiments never clobber the `eventId` used by folders 02 and 03. Arm a mode first, then send this, then poll."
+          }
+        },
+        {
+          "name": "GET /events/:probeEventId - poll the retry progression",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var b = pm.response.json();",
+                  "var d = b.delivery || {};",
+                  "console.log('state=' + d.state + ' attempts=' + d.totalAttempts + ' cycle=' + d.cycle +",
+                  "  ' lastHttpStatus=' + d.lastHttpStatus + ' lastErrorCode=' + d.lastErrorCode +",
+                  "  ' nextAttemptAt=' + d.nextAttemptAt);",
+                  "pm.test('state is one of the five documented states', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(d.state).to.be.oneOf(['READY', 'IN_FLIGHT', 'RETRY_WAIT', 'DELIVERED', 'DEAD']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/events/{{probeEventId}}",
+            "description": "Send this repeatedly. With `temp_failure x3` armed you should see the state move and `attempts` climb: 1s, 2s, 4s waits plus up to 250ms of jitter, because backoff is `1000 * 2^(n-1)` with the attempt already counted at claim time. `nextAttemptAt` is the scheduled instant - it is in the database, not in a timer, so a worker restart cannot lose it."
+          }
+        },
+        {
+          "name": "GET /__control/requests - prove the retries really arrived",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('one row per received request, verified or not', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var rows = pm.response.json().requests;",
+                  "  var ok = rows.filter(function (r) { return r.signature_ok; }).length;",
+                  "  console.log('received=' + rows.length + ' verified=' + ok + ' rejected=' + (rows.length - ok));",
+                  "  pm.expect(rows).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{receiverUrl}}/__control/requests?endpointId={{endpointA1}}",
+            "description": "The receiver's append-only observation log: one row per POST it actually received, including the ones it refused before doing any work. This is the evidence behind \"we retried exactly N times\" - the delivery table says what the sender intended, this says what the receiver saw."
+          }
+        },
+        {
+          "name": "PUT /__control/modes - rate_limited with Retry-After 30",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mode armed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"mode\": \"rate_limited\",\n  \"remaining\": 2,\n  \"retryAfter\": 30\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/__control/modes",
+            "description": "429 with `Retry-After: 30`. The sender takes `max(computed backoff, Retry-After)` and then caps the result at 60s, so a receiver can delay a retry but cannot hold the queue hostage. Only delta-seconds are honoured - an HTTP-date Retry-After is ignored rather than parsed with a clock that may differ from the receiver's."
+          }
+        },
+        {
+          "name": "PUT /__control/modes - perm_failure (500 forever) toward DEAD",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mode armed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"mode\": \"perm_failure\",\n  \"remaining\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/__control/modes",
+            "description": "500 forever. `remaining: null` means unbounded, so every attempt in the cycle fails and after `RETRY_MAX_ATTEMPTS_PER_CYCLE` (5) the delivery becomes DEAD - roughly 31 seconds of backoff (1+2+4+8+16s plus jitter). For a DEAD row you can redrive immediately, folder 06 arms `reject_400` instead: a non-retryable 4xx kills a delivery on the first attempt. A 500 is retryable even though this receiver will never recover - the sender cannot know that, and guessing wrong in the cheap direction is what keeps a transient outage from becoming a lost event."
+          }
+        },
+        {
+          "name": "PUT /__control/modes - lost_response, scoped to one event",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mode armed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventId\": \"{{probeEventId}}\",\n  \"mode\": \"lost_response\",\n  \"remaining\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/__control/modes",
+            "description": "The request that defines this whole design. The receiver commits its business effect, then destroys the socket without answering: the sender sees a transport error, records the outcome as UNKNOWN and retries. The resend dedups and answers 200. Then `GET /__control/effects` shows ONE effect row for the event. This is why the guarantee is at-least-once delivery with exactly-once business effect, and why anyone claiming exactly-once delivery is not describing this failure mode."
+          }
+        },
+        {
+          "name": "PUT /__control/modes - slow (3s, over the 2s sender timeout)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mode armed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"mode\": \"slow\",\n  \"remaining\": 2,\n  \"delayMs\": 3000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/__control/modes",
+            "description": "3000ms reply against `WEBHOOK_TIMEOUT_MS=2000`. The sender gives up on its total timer and treats the attempt as retryable, while the receiver keeps working and eventually applies the effect - a duplicate by construction. The timeout is a total budget (connect + headers + body), not an idle-socket timer, so a receiver that trickles bytes cannot stall a worker forever."
+          }
+        },
+        {
+          "name": "PUT /__control/modes - reject_400 (non-retryable, straight to DEAD)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mode armed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"mode\": \"reject_400\",\n  \"remaining\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/__control/modes",
+            "description": "A plain 4xx is NON_RETRYABLE: the receiver is telling us it will never accept this, and retrying a refusal is just load. The delivery goes to DEAD after one attempt, with the 400 recorded as `last_http_status`/`last_error_code` so the reason survives. 408 and 429 are the two 4xx exceptions - both are \"not now\", not \"not ever\"."
+          }
+        },
+        {
+          "name": "PUT /__control/modes - redirect (3xx must never be followed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mode armed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"mode\": \"redirect\",\n  \"remaining\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/__control/modes",
+            "description": "Answers 302 with a `location` pointing at a host that is not on the allowlist. Following it would be an SSRF by delegation: whoever controls the receiver would control where our signed payload - and our request - goes next. A 3xx is treated as NON_RETRYABLE, the body is never sent again, and the signature is never presented to a second host."
+          }
+        },
+        {
+          "name": "DELETE /__control/modes - disarm",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('all modes cleared', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{receiverUrl}}/__control/modes",
+            "description": "Clears every armed mode so the endpoint returns to success. Run this when you are done with folder 05: modes are persistent rows, not request-scoped state, so a leftover `perm_failure` will keep turning new events into DEAD deliveries while you debug something else."
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 Operator: queue status + redrive",
+      "item": [
+        {
+          "name": "GET /ops/status - operator view (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var b = pm.response.json();",
+                  "console.log('counts=' + JSON.stringify(b.counts) + ' expiredLeases=' + b.expiredLeases +",
+                  "  ' oldestPendingOverdueMs=' + (b.oldestPending ? b.oldestPending.overdueMs : 'none'));",
+                  "pm.test('one consistent snapshot, shaped for alerting', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(b.snapshotAt).to.be.a('string');",
+                  "  pm.expect(Object.keys(b.counts).sort()).to.eql(['dead', 'delivered', 'inFlight', 'ready', 'retryWait']);",
+                  "  pm.expect(b.expiredLeases).to.be.at.least(0);",
+                  "  pm.expect(b.workers).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{operatorToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/ops/status",
+            "description": "Four aggregates over one REPEATABLE READ transaction, so a delivery that moves between two statements cannot be counted as both DEAD and READY in one response. Deliberately not tenant-scoped: these counters describe the shared queue, and exposing them to tenants would leak other tenants' volume. `expiredLeases > 0` means work is parked after a worker died, not lost - the lease is the thing that recovers it."
+          }
+        },
+        {
+          "name": "GET /ops/status - tenant token (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 forbidden', function () {",
+                  "  pm.response.to.have.status(403);",
+                  "  pm.expect(pm.response.json().code).to.eql('forbidden');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/ops/status",
+            "description": "`@OperatorOnly()` is checked in the guard before any SQL runs. A tenant asking for the global queue depth is the reverse direction of the same rule as folder 02's operator-probe: the two privilege levels never share a route."
+          }
+        },
+        {
+          "name": "GET /ops/status - no token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 unauthorized', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().code).to.eql('unauthorized');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/ops/status",
+            "description": "Missing and invalid tokens are indistinguishable: the same 401 with the same generic message, so a probing caller learns nothing about which token format the system expects."
+          }
+        },
+        {
+          "name": "PUT /__control/modes - arm reject_400 to create a DEAD delivery",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mode armed\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{receiverUrl}}/__control/modes",
+            "description": "A plain 4xx is NON_RETRYABLE, so the FIRST failed attempt takes a delivery straight to DEAD - no backoff, no waiting for five cycles. That is the deterministic precondition every redrive request below needs, which is why folder 06 builds one instead of hoping a previous run left one behind. `remaining: null` means the mode stays armed until it is explicitly cleared.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"mode\": \"reject_400\",\n  \"remaining\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST /events - doomed event (DEAD on the first attempt)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('doomedKey', 'postman-doomed-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 + doomed ids captured\", function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.status).to.eql(\"READY\");",
+                  "  pm.collectionVariables.set(\"doomedEventId\", b.eventId);",
+                  "  pm.collectionVariables.set(\"doomedDeliveryId\", b.deliveryId);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{doomedKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/events",
+            "description": "Published to endpoint A1 while reject_400 is armed, with its own idempotency key so re-running the folder keeps producing a fresh DEAD delivery to redrive. The 202 is still honest: durably accepted, and nothing yet knows the receiver will refuse it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA1}}\",\n  \"eventType\": \"redrive.demo\",\n  \"payload\": { \"doomed\": true }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /events/:doomedEventId - wait until the delivery is DEAD",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var b = pm.response.json();",
+                  "var d = b.delivery || {};",
+                  "var tries = Number(pm.collectionVariables.get('deadWaitTries') || 0) + 1;",
+                  "pm.collectionVariables.set('deadWaitTries', String(tries));",
+                  "console.log('poll ' + tries + ': state=' + d.state + ' attempts=' + d.totalAttempts + ' cycle=' + d.cycle + ' lastHttpStatus=' + d.lastHttpStatus);",
+                  "var canLoop = !!pm.setNextRequest || (typeof postman !== \"undefined\" && !!postman.setNextRequest);",
+                  "function gotoRequest(name) {",
+                  "  if (pm.setNextRequest) pm.setNextRequest(name);",
+                  "  else postman.setNextRequest(name);",
+                  "}",
+                  "if (d.state !== 'DEAD' && tries < 200 && canLoop) {",
+                  "  pm.test('still waiting on the worker (poll ' + tries + ')', function () {",
+                  "    pm.expect(d.state).to.be.oneOf(['READY', 'IN_FLIGHT', 'RETRY_WAIT', 'DEAD']);",
+                  "  });",
+                  "  gotoRequest('GET /events/:doomedEventId - wait until the delivery is DEAD');",
+                  "} else {",
+                  "  pm.collectionVariables.set('deadWaitTries', '0');",
+                  "  pm.test(\"the doomed delivery is DEAD after exactly one attempt\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "  pm.expect(d.state).to.eql('DEAD');",
+                  "  pm.expect(d.totalAttempts).to.eql(1);",
+                  "  pm.expect(d.lastHttpStatus).to.eql(400);",
+                  "  pm.expect(d.lastErrorCode).to.eql('http_400');",
+                  "  pm.expect(d.nextAttemptAt).to.eql(null);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/events/{{doomedEventId}}",
+            "description": "A 400 is NON_RETRYABLE, so ONE attempt is enough to reach DEAD: no backoff, no five-cycle budget burned, and last_http_status / last_error_code keep why. This request re-sends itself until the state actually flips, which normally costs one worker poll interval (250ms). The loop is there so a slow machine cannot produce a fake pass and a fast one does not need a guessed sleep; running out of polls fails loudly, which in practice means no worker process is running at all."
+          }
+        },
+        {
+          "name": "GET /deliveries?state=DEAD - capture the redrive target",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the doomed delivery is DEAD and captured\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var row = pm.response.json().data[0];",
+                  "  pm.expect(row, \"no DEAD delivery - run the arm + doomed publish requests first\").to.be.an(\"object\");",
+                  "  pm.expect(row.state).to.eql('DEAD');",
+                  "  pm.expect(row.deliveryId).to.eql(pm.collectionVariables.get('doomedDeliveryId'));",
+                  "  pm.expect(row.attemptsInCycle).to.eql(1);",
+                  "  pm.collectionVariables.set(\"deadDeliveryId\", row.deliveryId);",
+                  "  pm.collectionVariables.set(\"deadCycle\", String(row.cycle));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries?state=DEAD&limit=1",
+            "description": "Asserts the DEAD row that comes back IS the delivery this run doomed: the listing is tenant-scoped, so tenant A finds its own broken delivery and hands the id to an operator - the operator cannot list, and the tenant cannot redrive. `deadCycle` is what the redrive request compares its `cycle + 1` against."
+          }
+        },
+        {
+          "name": "DELETE /__control/modes - disarm before redriving",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"all modes cleared\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{receiverUrl}}/__control/modes",
+            "description": "Cleared BEFORE the redrive, for a reason: redrive re-sends the same persisted envelope, and if the receiver were still refusing, the delivery would simply go DEAD again and the recovery demo would prove nothing about recovery. Modes are persistent rows, not request-scoped state - leaving this armed would poison every later request that targets endpoint A1."
+          }
+        },
+        {
+          "name": "POST /ops/deliveries/:deadDeliveryId/redrive - operator (202)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('redriveKey', 'postman-redrive-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202: a fresh cycle opens on the DEAD delivery', function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.state).to.eql('READY');",
+                  "  pm.expect(b.attemptsInCycle).to.eql(0);",
+                  "  var before = pm.collectionVariables.get('deadCycle');",
+                  "  if (before) pm.expect(b.cycle).to.eql(Number(before) + 1);",
+                  "  pm.collectionVariables.set('redriveCycle', String(b.cycle));",
+                  "  pm.expect(Object.keys(b).sort()).to.eql([",
+                  "    'attemptCount', 'attemptsInCycle', 'cycle', 'deliveryId', 'eventId', 'nextAttemptAt', 'state'",
+                  "  ]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{operatorToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{redriveKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Receiver outage resolved; customer asked for a retry of the whole backlog.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/ops/deliveries/{{deadDeliveryId}}/redrive",
+            "description": "The DEAD row was captured one request earlier in this same folder. `reason` is mandatory: redrive is a privileged action that spends fresh delivery effort, so it has to be attributable - the audit row stores the operator label, never the bearer token. Redrive reuses the SAME persisted envelope bytes and the SAME eventId, so a receiver that already applied the effect dedups it: retrying after uncertainty is safe by construction. The delivery keeps its history and opens a new cycle rather than being deleted and republished."
+          }
+        },
+        {
+          "name": "POST /ops/deliveries/:id/redrive - same key again (202 replay, one cycle)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the second click of the button does not burn another cycle', function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  var b = pm.response.json();",
+                  "  var first = pm.collectionVariables.get('redriveCycle');",
+                  "  if (!first) {",
+                  "    console.log('Run the operator redrive request first - it stores the cycle to compare against.');",
+                  "    return;",
+                  "  }",
+                  "  pm.expect(b.cycle).to.eql(Number(first));",
+                  "  pm.expect(b.deliveryId).to.eql(pm.collectionVariables.get('deadDeliveryId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{operatorToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{redriveKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Receiver outage resolved; customer asked for a retry of the whole backlog.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/ops/deliveries/{{deadDeliveryId}}/redrive",
+            "description": "Same key, same body, re-sent - the operator console double-submitting this is exactly the case that would otherwise start two cycles from one human decision. Expected: the identical stored response, the same `cycle`, not `cycle + 1`. It is a replay of a committed record, not a re-run of the work, so it cannot re-open the delivery either."
+          }
+        },
+        {
+          "name": "POST /events - healthy event on endpoint A2 (202)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('healthyKey', 'postman-healthy-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 + healthy ids captured\", function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  var b = pm.response.json();",
+                  "  pm.collectionVariables.set(\"healthyEventId\", b.eventId);",
+                  "  pm.collectionVariables.set(\"healthyDeliveryId\", b.deliveryId);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{healthyKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/events",
+            "description": "Endpoint A2 has no failure mode armed, so this delivery is READY and then DELIVERED - which is precisely the state the next request needs in order to be refused. Kept separate from the doomed event so the 409 path does not depend on a race.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpointId\": \"{{endpointA2}}\",\n  \"eventType\": \"redrive.demo\",\n  \"payload\": { \"healthy\": true }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST /ops/deliveries/:healthyDeliveryId/redrive - not DEAD (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409: redrive is for terminal deliveries only\", function () {",
+                  "  pm.response.to.have.status(409);",
+                  "  pm.expect(pm.response.json().code).to.eql('conflict');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{operatorToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-redrive-live-1"
+              }
+            ],
+            "url": "{{baseUrl}}/ops/deliveries/{{healthyDeliveryId}}/redrive",
+            "description": "Redrive locks the row `FOR UPDATE`, re-reads the state inside that lock and refuses anything that is not DEAD, so the 409 cannot be a stale answer. Bypassing the backoff of a live delivery would let one operator hammer a receiver that is already rate-limiting us, and would race the worker that holds the lease. An unknown id and a malformed id are both 404 - this 409 is the only answer that means \"it exists, and it is not yours to reset\".",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Trying to force an early retry of a delivery that is still scheduled.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST /ops/deliveries/:id/redrive - tenant token (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 before any delivery row is read', function () {",
+                  "  pm.response.to.have.status(403);",
+                  "  pm.expect(pm.response.json().code).to.eql('forbidden');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-redrive-tenant-1"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"I would like to retry my own delivery, please.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/ops/deliveries/{{deadDeliveryId}}/redrive",
+            "description": "Tenants own events; they do not own the retry budget. A tenant that could redrive could keep a permanently broken receiver busy forever, at everyone else's cost - so redrive is a human decision with an audit trail. The 403 comes from the guard: the delivery row is never even locked."
+          }
+        },
+        {
+          "name": "POST /ops/deliveries/:id/redrive - no reason (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 bad_request', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().code).to.eql('bad_request');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{operatorToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-redrive-noreason-1"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"told you it was a bad request\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/ops/deliveries/{{deadDeliveryId}}/redrive",
+            "description": "`reason` is required, non-empty, max 500 characters, and must contain a non-whitespace character - `\"   \"` is technically non-empty but is not an explainable action. The body is `.strict()` too, so a misspelled field is an error instead of a silently missing reason in the audit row."
+          }
+        },
+        {
+          "name": "POST /ops/deliveries/:id/redrive - malformed id (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 not_found without leaking which ids exist\", function () {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().code).to.eql('not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{operatorToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-redrive-badid-1"
+              }
+            ],
+            "url": "{{baseUrl}}/ops/deliveries/not-a-uuid/redrive",
+            "description": "The id is checked for UUID shape before anything else, so a malformed id gets the same 404 as a delivery that never existed - the same rule as GET /events/:id, and the deliberate opposite of the 400 a malformed body field gets. Note the request still carries a valid reason and key: the 404 is about the address, not the payload.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Probing with an id that cannot name a delivery.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /events/:doomedEventId - watch the redriven delivery land",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var b = pm.response.json();",
+                  "var d = b.delivery || {};",
+                  "var tries = Number(pm.collectionVariables.get('deadWaitTries') || 0) + 1;",
+                  "pm.collectionVariables.set('deadWaitTries', String(tries));",
+                  "console.log('poll ' + tries + ': state=' + d.state + ' attempts=' + d.totalAttempts + ' cycle=' + d.cycle + ' lastHttpStatus=' + d.lastHttpStatus);",
+                  "var canLoop = !!pm.setNextRequest || (typeof postman !== \"undefined\" && !!postman.setNextRequest);",
+                  "function gotoRequest(name) {",
+                  "  if (pm.setNextRequest) pm.setNextRequest(name);",
+                  "  else postman.setNextRequest(name);",
+                  "}",
+                  "if (d.state !== 'DELIVERED' && tries < 200 && canLoop) {",
+                  "  pm.test('still waiting on the worker (poll ' + tries + ')', function () {",
+                  "    pm.expect(d.state).to.be.oneOf(['READY', 'IN_FLIGHT', 'RETRY_WAIT', 'DELIVERED']);",
+                  "  });",
+                  "  gotoRequest('GET /events/:doomedEventId - watch the redriven delivery land');",
+                  "} else {",
+                  "  pm.collectionVariables.set('deadWaitTries', '0');",
+                  "  pm.test(\"the redriven delivery landed on cycle 2\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "  pm.expect(d.state).to.eql('DELIVERED');",
+                  "  pm.expect(d.cycle).to.eql(2);",
+                  "  pm.expect(d.totalAttempts).to.eql(2);",
+                  "  pm.expect(d.lastHttpStatus).to.eql(200);",
+                  "  pm.expect(d.lastErrorCode).to.eql(null);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tenantAToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/events/{{doomedEventId}}",
+            "description": "The proof that redrive is recovery and not just a state write: redrive set next_attempt_at to now and cleared the lease, so a worker claims it inside one poll interval and the SAME persisted envelope bytes - fresh attempt id, fresh timestamp, fresh signature over identical content - finally get a 200. cycle is 2 while the attempt history still holds the original refusal: the delivery was never deleted and republished, it continued."
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 Receiver: signature + dedup, called directly",
+      "item": [
+        {
+          "name": "POST /hook/:endpointA1 - correctly signed (effect applied)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('manualEventId', pm.variables.replaceIn('{{$uuid}}'));",
+                  "pm.collectionVariables.set('manualDeliveryId', pm.variables.replaceIn('{{$uuid}}'));",
+                  "var envelope = JSON.stringify({",
+                  "  eventId: pm.collectionVariables.get('manualEventId'),",
+                  "  deliveryId: pm.collectionVariables.get('manualDeliveryId'),",
+                  "  eventType: 'order.paid',",
+                  "  occurredAt: '2026-10-07T12:00:00.000Z',",
+                  "  payload: { orderId: 'ord-manual', source: 'postman' }",
+                  "});",
+                  "if (!pm.variables.get('endpointA1Secret')) {",
+                  "  console.log('Set collection variable endpointA1Secret first (the webhook secret of eeeeeeee-...-a1).');",
+                  "}",
+                  "pm.collectionVariables.set('manualEnvelope', envelope);",
+                  "var ts = Math.floor(Date.now() / 1000);",
+                  "pm.collectionVariables.set('manualTimestamp', String(ts));",
+                  "pm.collectionVariables.set('manualAttemptId', pm.variables.replaceIn('{{$uuid}}'));",
+                  "pm.collectionVariables.set('manualSignature', CryptoJS.HmacSHA256(ts + '.' + envelope, pm.variables.get('endpointA1Secret')).toString(CryptoJS.enc.Hex));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 applied=true: verified, parsed, one effect written', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.applied).to.be.true;",
+                  "  pm.expect(b.deduplicated).to.be.false;",
+                  "  pm.expect(b.eventId).to.eql(pm.collectionVariables.get('manualEventId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-event-id",
+                "value": "{{manualEventId}}"
+              },
+              {
+                "key": "x-delivery-id",
+                "value": "{{manualDeliveryId}}"
+              },
+              {
+                "key": "x-attempt-id",
+                "value": "{{manualAttemptId}}"
+              },
+              {
+                "key": "x-webhook-timestamp",
+                "value": "{{manualTimestamp}}"
+              },
+              {
+                "key": "x-webhook-signature",
+                "value": "{{manualSignature}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{manualEnvelope}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/hook/{{endpointA1}}",
+            "description": "The pre-request script does what the worker does: build the envelope, take the exact bytes about to be sent, and sign `${unixSeconds}.${those bytes}` into `x-webhook-signature`. The body is `{{manualEnvelope}}` - literally the string that was signed - so the bytes and the signature cannot drift apart.\n\nSet `endpointA1Secret` in the collection Variables tab: it is the webhook secret the seed wrote for `eeeeeeee-...-a1`, a development fixture that lives in `src/db/seed.ts` and the reason this file carries no secret values. A fresh event/delivery id is minted per run, so the demo does not depend on what the workers already delivered.\n\nA 401 here means the secret is missing or wrong, not that the body needs re-formatting: the receiver recomputes the HMAC over the bytes it received, so anything that is not byte-identical to what was signed fails closed."
+          }
+        },
+        {
+          "name": "POST /hook/:endpointA1 - same event, new attempt (200 deduplicated)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var envelope = pm.collectionVariables.get('manualEnvelope');",
+                  "var ts = Math.floor(Date.now() / 1000);",
+                  "pm.collectionVariables.set('manualTimestamp', String(ts));",
+                  "pm.collectionVariables.set('manualAttemptId', pm.variables.replaceIn('{{$uuid}}'));",
+                  "pm.collectionVariables.set('manualSignature', CryptoJS.HmacSHA256(ts + '.' + envelope, pm.variables.get('endpointA1Secret')).toString(CryptoJS.enc.Hex));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 applied=false: a duplicate we still answer politely', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.applied).to.be.false;",
+                  "  pm.expect(b.deduplicated).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-event-id",
+                "value": "{{manualEventId}}"
+              },
+              {
+                "key": "x-delivery-id",
+                "value": "{{manualDeliveryId}}"
+              },
+              {
+                "key": "x-attempt-id",
+                "value": "{{manualAttemptId}}"
+              },
+              {
+                "key": "x-webhook-timestamp",
+                "value": "{{manualTimestamp}}"
+              },
+              {
+                "key": "x-webhook-signature",
+                "value": "{{manualSignature}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{manualEnvelope}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/hook/{{endpointA1}}",
+            "description": "A different attempt id and a different timestamp make this a byte-level different signed request, but the same (endpoint, event) - so nothing is applied twice, and the answer is still 200 so the sender stops retrying. Dedup identity is a UNIQUE constraint, and the effect row plus its dedup marker are written by the SAME statement, so there is no check-then-write window between two concurrent attempts."
+          }
+        },
+        {
+          "name": "POST /hook/:endpointA1 - same ids, different content (409)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var envelope = JSON.stringify({",
+                  "  eventId: pm.collectionVariables.get('manualEventId'),",
+                  "  deliveryId: pm.collectionVariables.get('manualDeliveryId'),",
+                  "  eventType: 'order.paid',",
+                  "  occurredAt: '2026-10-07T12:00:00.000Z',",
+                  "  payload: { orderId: 'ord-manual-TAMPERED', amount: 1 }",
+                  "});",
+                  "pm.collectionVariables.set('tamperedEnvelope', envelope);",
+                  "var ts = Math.floor(Date.now() / 1000);",
+                  "pm.collectionVariables.set('manualTimestamp', String(ts));",
+                  "pm.collectionVariables.set('manualAttemptId', pm.variables.replaceIn('{{$uuid}}'));",
+                  "pm.collectionVariables.set('manualSignature', CryptoJS.HmacSHA256(ts + '.' + envelope, pm.variables.get('endpointA1Secret')).toString(CryptoJS.enc.Hex));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 content_conflict: identity is not enough', function () {",
+                  "  pm.response.to.have.status(409);",
+                  "  pm.expect(pm.response.json().code).to.eql('content_conflict');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-event-id",
+                "value": "{{manualEventId}}"
+              },
+              {
+                "key": "x-delivery-id",
+                "value": "{{manualDeliveryId}}"
+              },
+              {
+                "key": "x-attempt-id",
+                "value": "{{manualAttemptId}}"
+              },
+              {
+                "key": "x-webhook-timestamp",
+                "value": "{{manualTimestamp}}"
+              },
+              {
+                "key": "x-webhook-signature",
+                "value": "{{manualSignature}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{tamperedEnvelope}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/hook/{{endpointA1}}",
+            "description": "The signature is valid and the event id is already applied, so the receiver has to choose between \"duplicate\" and \"someone changed the content of a delivered event\". Content is a SHA-256 over canonical JSON, compared against the stored `content_hash`: same identity plus different bytes is 409, because applying it would silently rewrite business history and treating it as a duplicate would hide the discrepancy. Send the correctly-signed request again afterwards and it is still `deduplicated: true` - the conflict did not overwrite anything."
+          }
+        },
+        {
+          "name": "POST /hook/:endpointA1 - bad signature (401)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var envelope = pm.collectionVariables.get('manualEnvelope');",
+                  "var ts = Math.floor(Date.now() / 1000);",
+                  "pm.collectionVariables.set('manualTimestamp', String(ts));",
+                  "pm.collectionVariables.set('manualAttemptId', pm.variables.replaceIn('{{$uuid}}'));",
+                  "pm.collectionVariables.set('manualSignature', CryptoJS.HmacSHA256(ts + '.' + envelope, 'this-is-not-the-endpoint-secret').toString(CryptoJS.enc.Hex));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 invalid_signature, and nothing was applied', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().code).to.eql('invalid_signature');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-event-id",
+                "value": "{{manualEventId}}"
+              },
+              {
+                "key": "x-delivery-id",
+                "value": "{{manualDeliveryId}}"
+              },
+              {
+                "key": "x-attempt-id",
+                "value": "{{manualAttemptId}}"
+              },
+              {
+                "key": "x-webhook-timestamp",
+                "value": "{{manualTimestamp}}"
+              },
+              {
+                "key": "x-webhook-signature",
+                "value": "{{manualSignature}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{manualEnvelope}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/hook/{{endpointA1}}",
+            "description": "A fresh, well-formed timestamp and the wrong HMAC. The comparison is `timingSafeEqual` over equal-length buffers after a length guard, so a wrong signature costs the same time wherever it diverges - there is no byte-at-a-time oracle to exploit. Verification happens before the body is parsed and before dedup, so a rejected request cannot apply anything even in principle."
+          }
+        },
+        {
+          "name": "POST /hook/:endpointA1 - valid signature, stale timestamp (401)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var envelope = pm.collectionVariables.get('manualEnvelope');",
+                  "var ts = Math.floor(Date.now() / 1000) - 400;",
+                  "pm.collectionVariables.set('manualTimestamp', String(ts));",
+                  "pm.collectionVariables.set('manualAttemptId', pm.variables.replaceIn('{{$uuid}}'));",
+                  "pm.collectionVariables.set('manualSignature', CryptoJS.HmacSHA256(ts + '.' + envelope, pm.variables.get('endpointA1Secret')).toString(CryptoJS.enc.Hex));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 stale_timestamp: the replay window is closed', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().code).to.eql('stale_timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-event-id",
+                "value": "{{manualEventId}}"
+              },
+              {
+                "key": "x-delivery-id",
+                "value": "{{manualDeliveryId}}"
+              },
+              {
+                "key": "x-attempt-id",
+                "value": "{{manualAttemptId}}"
+              },
+              {
+                "key": "x-webhook-timestamp",
+                "value": "{{manualTimestamp}}"
+              },
+              {
+                "key": "x-webhook-signature",
+                "value": "{{manualSignature}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{manualEnvelope}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/hook/{{endpointA1}}",
+            "description": "The timestamp is inside the signed input, so a captured request cannot be refreshed without the secret - replay is limited to a 300s window even though the signature itself never expires. Freshness is checked FIRST because it is cheap: a stale request is refused without doing any HMAC work at all. Note this is a replay window, not the dedup window - inside 300s, replays are caught by the (endpoint,event) identity instead."
+          }
+        },
+        {
+          "name": "POST /hook/:unknown-endpoint - no destination identity (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 unknown_endpoint', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().code).to.eql('unknown_endpoint');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{manualEnvelope}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/hook/eeeeeeee-0000-4000-8000-0000000000ff",
+            "description": "The path id is not in the endpoints table, so there is no secret to verify against and the request dies before parsing. A destination that does not exist is refused, never defaulted to some other secret: the worker could not have produced this request either, because it only ever posts to a URL read out of `endpoints` for that delivery, gated by the deployment-owned host allowlist before a socket is opened."
+          }
+        },
+        {
+          "name": "GET /__control/requests - what the receiver saw",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejected requests are recorded too', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var rows = pm.response.json().requests;",
+                  "  var rejected = rows.filter(function (r) { return !r.signature_ok; }).length;",
+                  "  console.log('received=' + rows.length + ' rejected-before-any-work=' + rejected);",
+                  "  pm.expect(rows).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{receiverUrl}}/__control/requests?endpointId={{endpointA1}}",
+            "description": "Run folder 07 first and this shows the accepted deliveries, the refused signatures and the stale replays side by side, each with its attempt id - the difference between \"the sender retried\" and \"someone replayed a captured request\"."
+          }
+        },
+        {
+          "name": "GET /__control/effects - the exactly-once business effect proof",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('at most one effect row per (endpoint, event)', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var rows = pm.response.json().effects;",
+                  "  var seen = {};",
+                  "  var dupes = [];",
+                  "  rows.forEach(function (r) {",
+                  "    if (seen[r.event_id]) dupes.push(r.event_id);",
+                  "    seen[r.event_id] = true;",
+                  "  });",
+                  "  pm.expect(dupes).to.eql([]);",
+                  "  console.log('effect rows=' + rows.length + ' distinct events=' + Object.keys(seen).length);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{receiverUrl}}/__control/effects?endpointId={{endpointA1}}",
+            "description": "The whole design reduces to this one assertion: whatever the sender did - retries after 503, a retry after a lost response, a redrive of a DEAD delivery, a manual resend - `receiver_effects` holds at most one row per (endpoint_id, event_id). Every request in this collection is a way to try to break that invariant and the response here is the verdict."
+          }
+        },
+        {
+          "name": "POST /__control/reset - wipe receiver state (test-only)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('receiver state cleared', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "text"
+                }
+              }
+            },
+            "url": "{{receiverUrl}}/__control/reset",
+            "description": "Truncates `receiver_effects`, `receiver_requests` and `receiver_modes` - including the receiver's business state, which is why it exists only behind `RECEIVER_TEST_CONTROLS=1`. Unset it (as a production-like receiver must) and every `/__control/*` path answers 403 `test_controls_disabled`, so failure behaviour can never be steered from outside. The API itself has no equivalent switch."
+          }
+        }
+      ]
+    }
+  ]
+}
