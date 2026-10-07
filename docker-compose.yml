@@ -1,0 +1,147 @@
+# Development topology for this challenge: one PostgreSQL, one API, TWO
+# independent worker processes, one mock receiver.
+#
+# There is deliberately no Redis, Kafka, RabbitMQ or Kubernetes here. The
+# database IS the queue: one durable store for events, deliveries, leases and
+# retry schedules means a crashed worker and a crashed API have exactly the same
+# recovery path. Adding a second broker would introduce a second copy of the truth
+# to keep in sync, which is the failure mode this exercise is about.
+#
+# Usage:  docker compose up --build
+# Smoke:  see README ("Run it").
+#
+# The values below are the DEVELOPMENT fixtures from .env.example. They are
+# placeholders for a reproducible local stack and must never be reused anywhere
+# real: in a deployment, tokens, database credentials and endpoint signing secrets
+# come from a secret store, and this file contains none of them.
+
+name: reliable-webhook-delivery
+
+# One image, five processes. `bootstrap` is the only service with a `build:` key,
+# so exactly one image tag is produced and every other service starts from it -
+# which is what makes "these are the same program run twice" true for the workers.
+x-service: &service
+  image: reliable-webhook-delivery:local
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+
+# Shared configuration. Nothing secret: the tokens are the dev fixtures, and the
+# endpoint signing secrets live in the seeded `endpoints` table, never in the env.
+x-app-env: &app-env
+  NODE_ENV: production
+  LOG_LEVEL: info
+  DATABASE_URL: postgres://webhook:webhook@postgres:5432/webhook
+  # Seeded destination URLs are built from this base at schema-bootstrap time.
+  # It is deployment-owned configuration: an event caller can never supply or
+  # choose a destination URL.
+  RECEIVER_BASE_URL: http://receiver:4000
+  # SSRF boundary: workers may only POST to this one destination. Without it the
+  # endpoints table alone would be the trust anchor.
+  WEBHOOK_ALLOWED_HOSTS: receiver:4000
+  TENANT_A_TOKEN: dev-token-tenant-a
+  TENANT_B_TOKEN: dev-token-tenant-b
+  OPERATOR_TOKEN: dev-token-operator
+
+services:
+  postgres:
+    <<: *service
+    image: postgres:14.13-alpine
+    environment:
+      POSTGRES_USER: webhook
+      POSTGRES_PASSWORD: webhook
+      POSTGRES_DB: webhook
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No published port: only services on this network can reach the database.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webhook -d webhook"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot schema bootstrap: applies every migration from empty and writes the
+  # deterministic seed. Exactly one process does this, so five containers can
+  # never race each other's DDL, and nothing else starts until it exits 0.
+  bootstrap:
+    <<: *service
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: reliable-webhook-delivery:local
+    command: ["node", "dist/db/seed.js"]
+    environment: *app-env
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *service
+    image: reliable-webhook-delivery:local
+    command: ["node", "dist/api/main.js"]
+    environment: *app-env
+    ports:
+      - "3000:3000"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    # Readiness, not liveness: /health proves the process answers AND that the
+    # single dependency it needs is reachable.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(\"http://127.0.0.1:3000/health\").then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # Two independent worker processes sharing one durable queue. Each bounds its
+  # own outbound concurrency at 4, claims work with a lease, and recovers work
+  # whose lease lapsed - so killing either one loses nothing.
+  worker-a:
+    <<: *service
+    image: reliable-webhook-delivery:local
+    command: ["node", "dist/worker/worker-main.js"]
+    environment:
+      <<: *app-env
+      WORKER_NAME: worker-a
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+  worker-b:
+    <<: *service
+    image: reliable-webhook-delivery:local
+    command: ["node", "dist/worker/worker-main.js"]
+    environment:
+      <<: *app-env
+      WORKER_NAME: worker-b
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+  # The mock customer endpoint. It is not in the workers' depends_on list on
+  # purpose: delivery is at-least-once with bounded retries, so a receiver that
+  # is not up yet is a retry, not an error - and that is the behaviour worth
+  # being able to see.
+  receiver:
+    <<: *service
+    image: reliable-webhook-delivery:local
+    command: ["node", "dist/receiver/main.js"]
+    environment:
+      <<: *app-env
+      # Test-only failure modes are steerable here because this is a local demo.
+      # In a deployment this switch stays off so no caller can steer a receiver.
+      RECEIVER_TEST_CONTROLS: "1"
+    ports:
+      - "4000:4000"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:

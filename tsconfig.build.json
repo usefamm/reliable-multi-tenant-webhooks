@@ -1,7 +1,11 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "noEmit": false
+    "noEmit": false,
+    // rootDir is ./src (not "." like the typecheck config) so the build emits
+    // dist/<group>/<file>.js. The runtime resolves .env and migrations/ as
+    // `__dirname/../../`, which only lands on the project root from that depth.
+    "rootDir": "./src"
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "test", "**/*.spec.ts"]

@@ -11,6 +11,7 @@ export type ErrorCode =
   | 'forbidden'
   | 'not_found'
   | 'conflict'
+  | 'service_unavailable'
   | 'internal_error';
 
 export class HttpError extends Error {
@@ -48,3 +49,11 @@ export const notFound = (message = 'Resource not found') => new HttpError(404, '
 
 export const conflict = (message: string, detail?: Record<string, unknown>) =>
   new HttpError(409, 'conflict', message, detail);
+
+/**
+ * 503: the process is healthy but a dependency it needs is unreachable. Kept
+ * distinct from internal_error so a readiness probe can be retried by an
+ * orchestrator instead of paging on a bug.
+ */
+export const serviceUnavailable = (message: string) =>
+  new HttpError(503, 'service_unavailable', message);

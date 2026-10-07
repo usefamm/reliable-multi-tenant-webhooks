@@ -1,0 +1,16 @@
+# Never copied into an image layer: local credentials and VCS/scratch state.
+.env
+.git
+.refact
+
+# Reinstalled and rebuilt inside the image; copying them would only poison layers
+# (and `dist` here is a host build, which the image must not inherit).
+node_modules
+dist
+coverage
+
+# Source and tests ARE copied: the build stage typechecks the whole project,
+# including the test suite, before it emits. The runtime stage takes only
+# dist/, production node_modules and migrations/.
+Dockerfile
+.dockerignore

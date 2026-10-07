@@ -1,6 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AuthService } from '../../src/modules/auth/auth.service';
+import { Database } from '../../src/db/pool';
 import { createTestApp } from '../helpers/app';
 import { testDb } from '../helpers/db';
 import { SEED, TEST_TOKENS } from '../helpers/test-env';
@@ -62,9 +63,9 @@ describe('M3 auth + tenant isolation foundations', () => {
   });
 
   describe('HTTP guard behaviour', () => {
-    it('GET /health is public and sets a request id header', async () => {
+    it('GET /health is public, checks the database and sets a request id header', async () => {
       const res = await request(app.getHttpServer()).get('/health').expect(200);
-      expect(res.body.status).toBe('ok');
+      expect(res.body).toMatchObject({ status: 'ok', database: 'ok' });
       expect(res.headers['x-request-id']).toBeTruthy();
     });
 
@@ -74,6 +75,24 @@ describe('M3 auth + tenant isolation foundations', () => {
         .set('x-request-id', 'req-fixed-123')
         .expect(200);
       expect(res.headers['x-request-id']).toBe('req-fixed-123');
+    });
+
+    it('reports 503 when the database behind the readiness probe is unreachable', async () => {
+      // Port 1 is not listening: the connection fails for real rather than for
+      // the test being mocked.
+      const unreachable = new Database('postgres://probe-user:probe-pass@127.0.0.1:1/probe-db');
+      const probeApp = await createTestApp({ database: unreachable });
+      try {
+        const res = await request(probeApp.getHttpServer()).get('/health');
+        expect(res.status).toBe(503);
+        expect(res.body).toMatchObject({ code: 'service_unavailable', message: 'Service is not ready' });
+        expect(res.body.requestId).toBeTruthy();
+        // Driver errors name host, port and credentials; none of that is returned.
+        expect(JSON.stringify(res.body)).not.toMatch(/127\.0\.0\.1|probe-user|probe-pass|probe-db/);
+      } finally {
+        // app.close() ends the pool that was injected into this app.
+        await probeApp.close();
+      }
     });
   });
 });

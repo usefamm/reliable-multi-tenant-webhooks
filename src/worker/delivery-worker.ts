@@ -70,7 +70,10 @@ export class DeliveryWorker {
 
   private async loop(): Promise<void> {
     const { logger, owner, claimBatchSize, leaseTtlMs, pollIntervalMs } = this.opts;
-    logger.info({ owner, concurrency: this.opts.concurrency }, 'worker started');
+    logger.info(
+      { owner, concurrency: this.opts.concurrency, leaseTtlMs, pollIntervalMs },
+      'worker started',
+    );
 
     while (!this.stopping) {
       let claimedAny = false;

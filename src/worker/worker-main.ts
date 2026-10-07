@@ -49,10 +49,6 @@ async function bootstrap(): Promise<void> {
     shutdownGraceMs: config.WORKER_SHUTDOWN_GRACE_MS,
   });
   worker.start();
-  logger.info(
-    { concurrency: config.WORKER_CONCURRENCY, leaseTtlMs: config.WORKER_LEASE_TTL_MS },
-    'worker started',
-  );
 
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
