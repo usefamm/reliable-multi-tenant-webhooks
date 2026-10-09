@@ -2,7 +2,14 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { json } from 'express';
 import { requestIdHandler } from './request-id.middleware';
 
-/** 64 KiB raw request body limit (PDF). Exceeding it yields 413. */
+/**
+ * 64 KiB raw request body limit (PDF). Exceeding it yields 413.
+ *
+ * This bounds the *request* only. The envelope the worker sends is the payload
+ * plus `eventId`/`deliveryId`/`eventType`/`occurredAt`, so it is larger than the
+ * body that produced it and is bounded separately by `MAX_ENVELOPE_BYTES`, which
+ * publication checks against before anything is written.
+ */
 export const MAX_BODY_BYTES = 64 * 1024;
 
 /**

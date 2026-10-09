@@ -2,6 +2,7 @@ import { createServer, request as nodeRequest, type Server } from 'node:http';
 import { Database } from '../../src/db/pool';
 import { FakeClock } from '../../src/common/clock';
 import { signWebhook } from '../../src/modules/webhooks/signing';
+import { MAX_ENVELOPE_BYTES } from '../../src/domain/types';
 import { ReceiverRepository } from '../../src/receiver/repository';
 import { createReceiverHandler } from '../../src/receiver/handler';
 import { BASE_MS } from './worker';
@@ -76,7 +77,7 @@ export async function startReceiver(opts: {
   const clock = opts.clock ?? new FakeClock(BASE_MS);
   const handler = createReceiverHandler(repo, clock, {
     timestampToleranceSec: opts.timestampToleranceSec ?? 300,
-    maxBodyBytes: opts.maxBodyBytes ?? 64 * 1024,
+    maxBodyBytes: opts.maxBodyBytes ?? MAX_ENVELOPE_BYTES,
     testControls: opts.testControls ?? true,
   });
 

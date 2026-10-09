@@ -11,6 +11,10 @@ import type { WebhookEnvelope } from '../../domain/types';
  *
  * Field order is fixed by construction here. `occurredAt` is ISO-8601 UTC and is
  * stable for the life of the event.
+ *
+ * Size is checked by the caller, not here: publication refuses an over-sized
+ * envelope before any row exists, whereas a worker refusing to dispatch would
+ * strand a delivery the client was already told was accepted.
  */
 export function buildEnvelope(input: {
   eventId: string;

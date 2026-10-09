@@ -235,6 +235,7 @@ Outbound requests:
 - Have a 2-second timeout.
 - Bound captured response data.
 - Never forward API authentication tokens.
+- Send an envelope body no larger than 64 KiB, which is the same limit the receiver applies to the body it reads.
 
 ---
 
@@ -284,6 +285,17 @@ Returns:
 }
 ```
 
+Two size bounds apply:
+
+- The raw request body is capped at 64 KiB by the JSON parser (`MAX_BODY_BYTES`).
+- The envelope the worker actually sends is capped at 64 KiB too (`MAX_ENVELOPE_BYTES`), because the receiver refuses larger bodies.
+
+The envelope is the payload plus `eventId`, `deliveryId`, `eventType` and `occurredAt`, so it is
+always larger than the request that produced it. Publication builds it, measures it, and refuses an
+over-sized one with `413 payload_too_large` before writing anything: no event row, no delivery row, no
+idempotency record, so the `Idempotency-Key` stays reusable. Accepting such an event would promise a
+delivery the receiver can only reject.
+
 ### Get event
 
 ```http
@@ -326,7 +338,8 @@ The test suite covers the important failure boundaries:
 - Concurrent duplicate publication
 - Cross-tenant access
 - Invalid requests
-- Oversized requests
+- Oversized request body
+- Oversized delivery envelope (refused at publication, never dispatched)
 - Invalid signatures
 - Lost receiver response
 - Receiver restart

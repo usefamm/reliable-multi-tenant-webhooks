@@ -12,12 +12,13 @@
  */
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { DeliveryState } from '../../src/domain/types';
+import { DeliveryState, MAX_ENVELOPE_BYTES } from '../../src/domain/types';
 import { WebhookClient } from '../../src/modules/webhooks/webhook.client';
 import { createWebhookProcessor } from '../../src/worker/processor';
 import { DeliveryQueue } from '../../src/worker/delivery-queue';
 import { createTestApp } from '../helpers/app';
 import { q, resetDatabase } from '../helpers/db';
+import { payloadForEnvelopeSize } from '../helpers/envelope-size';
 import { startReceiver, type ReceiverApp } from '../helpers/receiver';
 import { startLoop, type DeliveryLoop, type LoopOptions } from '../helpers/delivery-loop';
 import { startCaptureEndpoint, type CaptureEndpoint } from '../helpers/capture-endpoint';
@@ -205,6 +206,49 @@ describe('PDF test 9: bounds and rollback', () => {
     expect(
       await q<{ n: number }>('SELECT count(*)::int AS n FROM deliveries WHERE event_id = $1', [ok.body.eventId]),
     ).toEqual([{ n: 1 }]);
+  });
+
+  it('refuses an envelope the receiver could never accept, and delivers the largest one it can', async () => {
+    // The receiver bounds the body it reads, and the envelope it receives is the
+    // payload plus ids and timestamps - larger than the request that produced it.
+    // Publication therefore has to refuse what the receiver would refuse, instead
+    // of accepting with 202 and letting the delivery die with a 413.
+    const loop = await newLoop({ owner: 'worker-envelope-bound' });
+    app = await createTestApp({ clock: receiver.clock });
+    const http = app.getHttpServer();
+    const auth = { Authorization: `Bearer ${TEST_TOKENS.tenantA}` };
+
+    const refused = await request(http)
+      .post('/events')
+      .set(auth)
+      .set('Idempotency-Key', 'envelope-refused')
+      .send({
+        endpointId: loop.endpointId,
+        eventType: 'order.created',
+        payload: payloadForEnvelopeSize('order.created', MAX_ENVELOPE_BYTES + 1),
+      });
+    expect(refused.status).toBe(413);
+    expect(refused.body).toMatchObject({ code: 'payload_too_large' });
+
+    const accepted = await request(http)
+      .post('/events')
+      .set(auth)
+      .set('Idempotency-Key', 'envelope-accepted')
+      .send({
+        endpointId: loop.endpointId,
+        eventType: 'order.created',
+        payload: payloadForEnvelopeSize('order.created', MAX_ENVELOPE_BYTES),
+      })
+      .expect(202);
+
+    loop.start();
+    await loop.waitForState(accepted.body.deliveryId, [DeliveryState.DELIVERED]);
+
+    // One attempt, answered 200: the largest envelope the service is allowed to
+    // build is genuinely one the receiver takes, so the bound is not over-tight.
+    expect((await loop.attempts(accepted.body.deliveryId)).map((a) => a.http_status)).toEqual([200]);
+    expect(await receiver.repo.listRequests(loop.endpointId)).toHaveLength(1);
+    expect(await receiver.repo.listEffects(loop.endpointId)).toHaveLength(1);
   });
 
   it('rolls a completion write back entirely, leaving the lease and history untouched', async () => {

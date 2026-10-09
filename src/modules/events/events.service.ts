@@ -2,9 +2,9 @@ import type { PoolClient } from 'pg';
 import type { Database } from '../../db/pool';
 import type { Clock } from '../../common/clock';
 import { newUuid } from '../../common/ids';
-import { notFound } from '../../common/errors';
+import { notFound, payloadTooLarge } from '../../common/errors';
 import { buildEnvelope } from '../webhooks/envelope';
-import { DeliveryState } from '../../domain/types';
+import { DeliveryState, MAX_ENVELOPE_BYTES } from '../../domain/types';
 import {
   IdempotencyOperation,
   IdempotencyService,
@@ -75,7 +75,8 @@ export class EventsService {
    *   - concurrent duplicates serialize on the UNIQUE(tenant, op, key) index and
    *     losers roll back their duplicate rows, then replay the winner's response;
    *   - a request that fails validation/ownership never writes a record, so it
-   *     does not consume the key.
+   *     does not consume the key - the envelope-size refusal works the same way,
+   *     because it throws inside this same transaction.
    */
   async publish(
     tenantId: string,
@@ -105,7 +106,14 @@ export class EventsService {
     return outcome.body;
   }
 
-  /** Insert event + delivery inside an existing transaction client. */
+  /**
+   * Insert event + delivery inside an existing transaction client.
+   *
+   * The bytes validated here are the envelope, not the request body: the
+   * receiver bounds what it receives, and the envelope is larger than the body
+   * that produced it. The check runs before the first INSERT so a refusal rolls
+   * back the event, the delivery AND the idempotency claim as one unit.
+   */
   async insertEventAndDelivery(
     client: PoolClient,
     tenantId: string,
@@ -122,6 +130,12 @@ export class EventsService {
       occurredAt,
       payload: input.payload,
     });
+
+    if (bytes.length > MAX_ENVELOPE_BYTES) {
+      throw payloadTooLarge(
+        `The delivery envelope would be ${bytes.length} bytes, over the ${MAX_ENVELOPE_BYTES}-byte limit a receiver accepts; reduce the payload size`,
+      );
+    }
 
     await client.query(
       `INSERT INTO events (id, tenant_id, endpoint_id, event_type, payload, occurred_at)

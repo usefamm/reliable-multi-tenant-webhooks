@@ -2,7 +2,10 @@ import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { createTestApp } from '../helpers/app';
 import { q, resetDatabase, testDb } from '../helpers/db';
+import { payloadForEnvelopeSize } from '../helpers/envelope-size';
 import { SEED, TEST_TOKENS } from '../helpers/test-env';
+import { MAX_BODY_BYTES } from '../../src/api/http-setup';
+import { MAX_ENVELOPE_BYTES } from '../../src/domain/types';
 
 const authA = { Authorization: `Bearer ${TEST_TOKENS.tenantA}` };
 const authB = { Authorization: `Bearer ${TEST_TOKENS.tenantB}` };
@@ -130,6 +133,58 @@ describe('M4 event publication + read model', () => {
         .send(publishBody({ payload: big }))
         .expect(413);
       expect(res.body.code).toBe('payload_too_large');
+    });
+
+    it('refuses a body the parser accepts but the envelope cannot carry, without consuming the key', async () => {
+      // The envelope adds eventId/deliveryId/eventType/occurredAt around the
+      // payload, so this request is inside MAX_BODY_BYTES while its envelope lands
+      // one byte over MAX_ENVELOPE_BYTES - the case that used to return 202 and
+      // then go DEAD at the receiver's own 413.
+      const body = publishBody({ payload: payloadForEnvelopeSize('order.created', MAX_ENVELOPE_BYTES + 1) });
+      expect(Buffer.byteLength(JSON.stringify(body), 'utf8')).toBeLessThanOrEqual(MAX_BODY_BYTES);
+
+      const res = await request(app.getHttpServer())
+        .post('/events')
+        .set(authA)
+        .set('Idempotency-Key', 'key-envelope-over')
+        .send(body)
+        .expect(413);
+      expect(res.body.code).toBe('payload_too_large');
+      expect(res.body.message).toMatch(/envelope/);
+
+      // Refused before the first INSERT, so the event, the delivery and the
+      // idempotency claim all rolled back together.
+      const durable = await q<{ events: number; deliveries: number; claims: number }>(
+        `SELECT (SELECT count(*) FROM events)::int             AS events,
+                (SELECT count(*) FROM deliveries)::int         AS deliveries,
+                (SELECT count(*) FROM idempotency_records)::int AS claims`,
+      );
+      expect(durable[0]).toEqual({ events: 0, deliveries: 0, claims: 0 });
+
+      // The key survived the refusal, so the same key publishes for real now.
+      await request(app.getHttpServer())
+        .post('/events')
+        .set(authA)
+        .set('Idempotency-Key', 'key-envelope-over')
+        .send(publishBody())
+        .expect(202);
+    });
+
+    it('accepts an event whose envelope is exactly at the limit', async () => {
+      // The bound is "over the limit", not "at it": the receiver reads bodies up to
+      // and including 64 KiB, so the largest envelope it can accept must be delivered.
+      const res = await request(app.getHttpServer())
+        .post('/events')
+        .set(authA)
+        .set('Idempotency-Key', 'key-envelope-exact')
+        .send(publishBody({ payload: payloadForEnvelopeSize('order.created', MAX_ENVELOPE_BYTES) }))
+        .expect(202);
+
+      const rows = await q<{ env_len: number }>(
+        'SELECT octet_length(envelope_bytes) AS env_len FROM deliveries WHERE id = $1',
+        [res.body.deliveryId],
+      );
+      expect(Number(rows[0].env_len)).toBe(MAX_ENVELOPE_BYTES);
     });
 
     it('returns 404 when the endpoint belongs to another tenant (no leak)', async () => {

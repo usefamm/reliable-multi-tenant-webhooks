@@ -35,6 +35,19 @@ export interface WebhookEnvelope {
   payload: unknown; // caller-supplied JSON object
 }
 
+/**
+ * Maximum size, in bytes, of the serialized envelope a receiver accepts: the
+ * same 64 KiB bound the receiver enforces on its inbound body.
+ *
+ * The envelope is always strictly LARGER than the request body that produced it
+ * (`eventId`, `deliveryId`, `eventType` and `occurredAt` are added around the
+ * payload), so the parser bound on `POST /events` does not bound the delivery.
+ * Publication therefore measures the built bytes against this limit: a request
+ * that would produce an over-sized envelope is refused with 413 instead of being
+ * accepted with 202 and then failing permanently at the receiver.
+ */
+export const MAX_ENVELOPE_BYTES = 64 * 1024;
+
 /** A row from the deliveries table (subset used across services). */
 export interface DeliveryRow {
   id: string;

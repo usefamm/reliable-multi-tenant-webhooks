@@ -8,6 +8,7 @@ import { Database } from '../db/pool';
 import { SystemClock } from '../common/clock';
 import { createLogger } from '../common/logger';
 import { loadConfig } from '../config/env';
+import { MAX_ENVELOPE_BYTES } from '../domain/types';
 import { ReceiverRepository } from './repository';
 import { createReceiverHandler } from './handler';
 
@@ -28,7 +29,7 @@ async function bootstrap(): Promise<void> {
   const repo = new ReceiverRepository(db);
   const handler = createReceiverHandler(repo, new SystemClock(), {
     timestampToleranceSec: config.RECEIVER_TIMESTAMP_TOLERANCE_SEC,
-    maxBodyBytes: 64 * 1024,
+    maxBodyBytes: MAX_ENVELOPE_BYTES,
     testControls: config.RECEIVER_TEST_CONTROLS,
   });
 
