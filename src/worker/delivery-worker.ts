@@ -1,11 +1,11 @@
 import type { Logger } from '../common/logger';
 import { Semaphore } from '../common/semaphore';
-import type { DeliveryQueue } from './delivery-queue';
-import type { RetryPolicy } from './retry-policy';
-import type { DeliveryProcessor, ClaimedWork, DeliveryAttemptResult } from './types';
+import type { RetryPolicy } from '../domain/retry-policy';
+import type { WorkQueue } from '../domain/ports';
+import type { DeliveryProcessor, ClaimedWork, DeliveryAttemptResult } from '../domain/attempt';
 
 export interface DeliveryWorkerOptions {
-  queue: DeliveryQueue;
+  queue: WorkQueue;
   policy: RetryPolicy;
   processor: DeliveryProcessor;
   logger: Logger;
@@ -42,6 +42,7 @@ export class DeliveryWorker {
   private readonly semaphore: Semaphore;
   private readonly inFlight = new Set<Promise<void>>();
   private stopping = false;
+  private polls = 0;
   private loopPromise: Promise<void> | null = null;
   private wake: (() => void) | null = null;
 
@@ -53,6 +54,15 @@ export class DeliveryWorker {
   /** Number of dispatches currently in flight (for tests/observability). */
   get inFlightCount(): number {
     return this.inFlight.size;
+  }
+
+  /**
+   * Completed poll iterations (each one attempted to claim up to claimBatchSize
+   * deliveries). A scheduler hook: callers can wait for "the worker looked N
+   * times and found nothing" instead of sleeping for an arbitrary wall-clock time.
+   */
+  get pollCount(): number {
+    return this.polls;
   }
 
   start(): void {
@@ -100,6 +110,8 @@ export class DeliveryWorker {
         claimedAny = true;
         this.spawnHandle(work);
       }
+
+      this.polls += 1;
 
       if (this.stopping) break;
       // If we just claimed work and may still have capacity, loop again quickly

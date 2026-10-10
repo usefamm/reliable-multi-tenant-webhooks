@@ -22,7 +22,7 @@ typo does not burn their own key. The claim is written *before* the work deliber
 would let two concurrent requests both do the work and then both fail a uniqueness precondition, which
 surfaces as a spurious 409.
 
-**T2 — claim** (`DeliveryQueue.claimNext`, one statement plus the attempt insert).
+**T2 — claim** (`PgDeliveryQueue.claimNext`, one claim statement plus the attempt insert, both through the repositories).
 A CTE selects at most one row that is `READY`/`RETRY_WAIT` and due, or `IN_FLIGHT` with an expired
 lease, using `FOR UPDATE SKIP LOCKED`; `UPDATE ... FROM candidate ... RETURNING` takes the lease,
 increments `lease_generation`, `attempt_count` and `attempts_in_cycle`, then the attempt row is inserted
@@ -31,7 +31,7 @@ the point: the delivery of "we decided to send this" is durable, so a crash imme
 costs a lease, not an event. `SKIP LOCKED` is what makes two workers structurally unable to double-claim
 or block each other.
 
-**T3 — completion** (`DeliveryQueue.completeAttempt`, one transaction, fenced).
+**T3 — completion** (`PgDeliveryQueue.completeAttempt`, one transaction, fenced).
 The attempt row is updated unconditionally with the truthful outcome (so even a worker that has lost its
 lease leaves an accurate record of what it saw), then the `deliveries` state write carries
 `WHERE id = $1 AND lease_owner = $8 AND lease_generation = $9`. `rowCount = 0` means "someone else owns

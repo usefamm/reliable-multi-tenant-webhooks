@@ -1,5 +1,5 @@
 import { Global, Module } from '@nestjs/common';
-import { CONFIG, CLOCK, DATABASE, LOGGER, RANDOM } from './tokens';
+import { CONFIG, CLOCK, DATABASE, LOGGER, RANDOM } from '../common/tokens';
 import { getConfig, type AppConfig } from '../config/env';
 import { Database } from '../db/pool';
 import { DatabaseService } from '../db/database.service';

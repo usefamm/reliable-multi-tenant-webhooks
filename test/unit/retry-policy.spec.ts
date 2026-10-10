@@ -1,8 +1,8 @@
 import { FakeClock } from '../../src/common/clock';
 import { FakeRandom } from '../../src/common/random';
-import { RetryPolicy } from '../../src/worker/retry-policy';
+import { RetryPolicy } from '../../src/domain/retry-policy';
 import { DeliveryState } from '../../src/domain/types';
-import type { ClaimedWork, DeliveryAttemptResult } from '../../src/worker/types';
+import type { ClaimedWork, DeliveryAttemptResult } from '../../src/domain/attempt';
 
 const CONFIG = {
   RETRY_MAX_ATTEMPTS_PER_CYCLE: 5,

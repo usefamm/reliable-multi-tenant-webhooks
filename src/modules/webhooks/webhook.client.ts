@@ -3,7 +3,22 @@ import { request as httpsRequest } from 'node:https';
 import { truncateToBytes } from '../../common/bytes';
 import type { AppConfig } from '../../config/env';
 import { signWebhook } from './signing';
-import type { AttemptOutcomeKind, DeliveryAttemptResult } from '../../worker/types';
+import type { DeliveryAttemptResult } from '../../domain/attempt';
+import {
+  DestinationNotAllowedError,
+  isAllowedDestination,
+} from './destination-policy';
+import {
+  classifyStatus,
+  describeStatus,
+  headerOf,
+  isTimeoutLike,
+  parseRetryAfterMs,
+} from './response-classification';
+
+// Re-exported so existing importers keep one stable entry point.
+export { DestinationNotAllowedError, isAllowedDestination } from './destination-policy';
+export { parseRetryAfterMs } from './response-classification';
 
 type WebhookConfig = Pick<
   AppConfig,
@@ -21,56 +36,6 @@ export interface DispatchInput {
   body: Buffer;
   /** Unix seconds for this attempt (fresh per attempt). */
   timestampUnixSec: number;
-}
-
-/**
- * Error raised when a destination fails the deployment's network boundary check.
- * Treated as NON_RETRYABLE by the worker: misconfiguration must not burn the
- * retry budget, and must never reach the network.
- */
-export class DestinationNotAllowedError extends Error {
-  constructor(url: string) {
-    super(`Destination host is not in the webhook allowlist: ${redactUrl(url)}`);
-    this.name = 'DestinationNotAllowedError';
-  }
-}
-
-/**
- * SSRF guard (PDF section 18): only contact configured destinations.
- *
- * The destination URL is always server-side data from the endpoints table -
- * the event API can never supply or replace a URL. When
- * WEBHOOK_ALLOWED_HOSTS is configured, dispatch is additionally pinned to that
- * explicit host(:port) allowlist, so even a compromised endpoints row cannot
- * point workers at arbitrary internal addresses.
- */
-export function isAllowedDestination(url: string, allowedHostsRaw: string): boolean {
-  const hosts = allowedHostsRaw
-    .split(',')
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean);
-  if (hosts.length === 0) return true; // no allowlist configured
-  try {
-    const u = new URL(url);
-    const hostPort = `${u.hostname.toLowerCase()}:${u.port || defaultPort(u.protocol)}`;
-    return hosts.includes(hostPort) || hosts.includes(u.hostname.toLowerCase());
-  } catch {
-    return false;
-  }
-}
-
-function defaultPort(protocol: string): string {
-  return protocol === 'https:' ? '443' : '80';
-}
-
-/** Strip any userinfo/query before putting a URL in an error message. */
-function redactUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    return `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ''}`;
-  } catch {
-    return '[unparseable]';
-  }
 }
 
 /**
@@ -291,36 +256,3 @@ function resultFromStatus(
   };
 }
 
-function describeStatus(status: number, incomplete?: 'timeout' | 'stream_error'): string {
-  if (status >= 300 && status < 400) return 'redirect'; // never followed
-  return incomplete ? `${incomplete}_http_${status}` : `http_${status}`;
-}
-
-function headerOf(res: IncomingMessage, name: string): string | null {
-  const value = res.headers[name];
-  return Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
-}
-
-function isTimeoutLike(err: Error): boolean {
-  return (err as NodeJS.ErrnoException).code === 'ETIMEDOUT';
-}
-
-function classifyStatus(status: number): AttemptOutcomeKind {
-  if (status >= 200 && status < 300) return 'SUCCESS';
-  if (status === 408 || status === 429 || status >= 500) return 'RETRYABLE';
-  return 'NON_RETRYABLE'; // includes all 3xx (never followed) and other 4xx
-}
-
-/**
- * Parse Retry-After (PDF section 16): only delta-seconds is supported.
- * Invalid, negative, unparseable, or HTTP-date values return null so the retry
- * policy falls back to normal backoff.
- */
-export function parseRetryAfterMs(raw: string | null): number | null {
-  if (raw === null) return null;
-  const trimmed = raw.trim();
-  if (!/^\d+$/.test(trimmed)) return null; // not a plain delta-seconds value
-  const seconds = Number(trimmed);
-  if (!Number.isFinite(seconds) || seconds > 86_400) return null;
-  return seconds * 1000;
-}

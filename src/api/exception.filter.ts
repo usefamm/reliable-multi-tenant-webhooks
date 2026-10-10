@@ -9,7 +9,7 @@ import {
 import type { Request, Response } from 'express';
 import { HttpError } from '../common/errors';
 import type { Logger } from '../common/logger';
-import { LOGGER } from './tokens';
+import { LOGGER } from '../common/tokens';
 import { REQUEST_ID_KEY } from '../modules/auth/decorators';
 
 interface ErrorBody {

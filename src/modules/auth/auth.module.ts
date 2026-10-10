@@ -1,8 +1,9 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
-import { DATABASE } from '../../api/tokens';
+import { DATABASE } from '../../common/tokens';
 import { AuthService } from './auth.service';
 import { AuthGuard } from './auth.guard';
+import { AuthTokenRepository } from '../../db/repositories/auth-token.repository';
 import type { Database } from '../../db/pool';
 
 /**
@@ -13,8 +14,8 @@ import type { Database } from '../../db/pool';
   providers: [
     {
       provide: AuthService,
-      useFactory: (db: Database) => new AuthService(db),
-      inject: [DATABASE],
+      useFactory: (db: Database, tokens: AuthTokenRepository) => new AuthService(db, tokens),
+      inject: [DATABASE, AuthTokenRepository],
     },
     { provide: APP_GUARD, useClass: AuthGuard },
   ],

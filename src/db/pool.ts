@@ -1,6 +1,11 @@
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg';
 import type { AppConfig } from '../config/env';
 
+export interface TransactionOptions {
+  /** Defaults to the server default (READ COMMITTED). */
+  isolation?: 'REPEATABLE READ' | 'SERIALIZABLE';
+}
+
 /**
  * Thin wrapper around a pg Pool. We use node-postgres directly (no ORM) so we
  * keep full control over transaction boundaries, row locking
@@ -47,10 +52,15 @@ export class Database {
    * Run `fn` inside a single transaction. Commits on success, rolls back on any
    * throw. The client is always released. Never perform HTTP inside `fn`.
    */
-  async withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  async withTransaction<T>(
+    fn: (client: PoolClient) => Promise<T>,
+    options: TransactionOptions = {},
+  ): Promise<T> {
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN');
+      await client.query(
+        options.isolation ? `BEGIN ISOLATION LEVEL ${options.isolation}` : 'BEGIN',
+      );
       const result = await fn(client);
       await client.query('COMMIT');
       return result;
@@ -66,18 +76,25 @@ export class Database {
     }
   }
 
+  /** Cheap liveness probe: resolves if the database answers, rejects otherwise. */
+  async ping(): Promise<void> {
+    await this.pool.query('SELECT 1');
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }
 }
 
-/** Convenience for running a query on either a Pool or a transaction client. */
-export type QueryRunner = Pool | PoolClient;
-
-export function runQuery<T extends QueryResultRow = QueryResultRow>(
-  runner: QueryRunner,
-  text: string,
-  params?: unknown[],
-): Promise<QueryResult<T>> {
-  return runner.query<T>(text, params);
+/**
+ * Anything repositories can run SQL against: the `Database` (autocommit, one
+ * statement per call) or the transaction client handed out by
+ * `Database.withTransaction`. Repositories take one of these as their first
+ * argument, so the CALLER decides the transaction boundary.
+ */
+export interface Queryable {
+  query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ): Promise<QueryResult<T>>;
 }

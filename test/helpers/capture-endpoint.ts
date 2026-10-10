@@ -21,6 +21,12 @@ export interface CaptureResponse {
   headers?: Record<string, string>;
   /** Hold the reply open this long, so timeouts and concurrency overlap are real. */
   delayMs?: number;
+  /**
+   * Hold the reply open until this promise settles. Unlike `delayMs` no timer is
+   * involved, so a test can prove "the sender gave up while the receiver was still
+   * silent" without racing a wall clock.
+   */
+  hold?: Promise<void>;
 }
 
 export type Responder = (req: CapturedRequest, index: number) => CaptureResponse;
@@ -148,7 +154,8 @@ function reply(res: ServerResponse, spec: CaptureResponse): void {
     });
     res.end(payload);
   };
-  if (spec.delayMs) setTimeout(send, spec.delayMs).unref();
+  if (spec.hold) void spec.hold.then(send);
+  else if (spec.delayMs) setTimeout(send, spec.delayMs).unref();
   else send();
 }
 

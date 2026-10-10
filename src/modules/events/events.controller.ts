@@ -3,7 +3,7 @@ import { EventsService, type PublishResult } from './events.service';
 import { parsePublishEventBody } from './dto';
 import { badRequest, notFound } from '../../common/errors';
 import { isUuid } from '../../common/ids';
-import { LOGGER } from '../../api/tokens';
+import { LOGGER } from '../../common/tokens';
 import type { Logger } from '../../common/logger';
 import { CurrentPrincipal, CurrentRequestId } from '../auth/decorators';
 import type { Principal } from '../auth/principal';

@@ -14,6 +14,7 @@ import { startReceiver, type ReceiverApp } from '../helpers/receiver';
 import { startLoop, type DeliveryLoop, type LoopOptions } from '../helpers/delivery-loop';
 import { resetDatabase } from '../helpers/db';
 import { SEED, TEST_DATABASE_URL } from '../helpers/test-env';
+import { waitUntil } from '../helpers/wait';
 
 const SECOND = 1_000;
 
@@ -52,12 +53,11 @@ describe('delivery loop: retry scheduling and recovery', () => {
 
   /** Wait until the receiver has logged at least `count` requests (durable fact, not a sleep). */
   async function waitForRequests(loop: DeliveryLoop, count: number): Promise<void> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
-      if ((await receiver.repo.listRequests(loop.endpointId)).length >= count) return;
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    throw new Error(`receiver did not observe ${count} requests`);
+    await waitUntil(
+      () => receiver.repo.listRequests(loop.endpointId),
+      (requests) => requests.length >= count,
+      `receiver to observe ${count} requests`,
+    );
   }
 
   describe('happy path', () => {
@@ -316,7 +316,7 @@ describe('delivery loop: retry scheduling and recovery', () => {
       replacement.start();
 
       // The replacement must not attempt early: the due gate survived the restart.
-      await new Promise((r) => setTimeout(r, 120));
+      await replacement.waitForIdlePolls();
       expect(await replacement.attempts(deliveryId)).toHaveLength(1);
 
       await replacement.advanceToDue(deliveryId);

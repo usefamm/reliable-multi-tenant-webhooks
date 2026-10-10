@@ -126,9 +126,9 @@ describe('PDF test 7: stale worker resumes after the lease was recovered', () =>
     b.start();
     await b.waitForState(deliveryId, [DeliveryState.DELIVERED]);
 
-    // Real time, not the fake clock: A's in-flight HTTP call returns inside this
-    // window, so its late completion genuinely happens after DELIVERED.
-    await new Promise((r) => setTimeout(r, 400));
+    // A's slow HTTP call is still in flight. Wait for its late completion to be
+    // recorded (a durable fact), so it genuinely lands AFTER DELIVERED.
+    await a.waitForAttempts(deliveryId, 1);
     const final = await b.delivery(deliveryId);
     expect(final).toMatchObject({ state: DeliveryState.DELIVERED, attempt_count: 2, next_attempt_at: null });
     expect(await b.attempts(deliveryId)).toHaveLength(2);

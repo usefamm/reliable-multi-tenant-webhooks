@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: webhook
+          POSTGRES_PASSWORD: webhook
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U webhook"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The suite drops and recreates this database itself (test/global-setup.ts).
+      TEST_DATABASE_URL: postgres://webhook:webhook@127.0.0.1:5432/webhook_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:coverage

@@ -2,7 +2,10 @@ import type { Database } from '../../db/pool';
 import type { Clock } from '../../common/clock';
 import { newUuid } from '../../common/ids';
 import { conflict, notFound } from '../../common/errors';
+import { canRedrive } from '../../domain/delivery-state';
 import { DeliveryState } from '../../domain/types';
+import { DeliveryRepository } from '../../db/repositories/delivery.repository';
+import { RedriveAuditRepository } from '../../db/repositories/redrive-audit.repository';
 import {
   IdempotencyOperation,
   IdempotencyService,
@@ -25,14 +28,6 @@ export interface RedriveParams {
   idempotencyKey: string;
   /** Operator label from the authenticated principal - never the raw token. */
   operator: string;
-}
-
-interface DeliveryLockRow {
-  id: string;
-  event_id: string;
-  state: DeliveryState;
-  cycle: number;
-  attempt_count: number;
 }
 
 /**
@@ -60,6 +55,8 @@ export class RedriveService {
     private readonly db: Database,
     private readonly clock: Clock,
     private readonly idempotency: IdempotencyService,
+    private readonly deliveries: DeliveryRepository = new DeliveryRepository(),
+    private readonly audits: RedriveAuditRepository = new RedriveAuditRepository(),
   ) {}
 
   async redrive(params: RedriveParams): Promise<RedriveResult> {
@@ -67,11 +64,7 @@ export class RedriveService {
     // a tenant's resource, and tenant_id is part of idempotency_unique. This read
     // is only key scoping; the authoritative state check happens under the row
     // lock inside the transaction below.
-    const scope = await this.db.query<{ tenant_id: string }>(
-      'SELECT tenant_id FROM deliveries WHERE id = $1',
-      [params.deliveryId],
-    );
-    const tenantId = scope.rows[0]?.tenant_id;
+    const tenantId = await this.deliveries.findTenantId(this.db, params.deliveryId);
     if (!tenantId) {
       throw notFound('Delivery not found');
     }
@@ -89,18 +82,11 @@ export class RedriveService {
         requestHash,
       },
       async (client) => {
-        const { rows } = await client.query<DeliveryLockRow>(
-          `SELECT id, event_id, state, cycle, attempt_count
-             FROM deliveries
-            WHERE id = $1
-              FOR UPDATE`,
-          [params.deliveryId],
-        );
-        const delivery = rows[0];
+        const delivery = await this.deliveries.lockForRedrive(client, params.deliveryId);
         if (!delivery) {
           throw notFound('Delivery not found');
         }
-        if (delivery.state !== DeliveryState.DEAD) {
+        if (!canRedrive(delivery.state)) {
           throw conflict(
             `Only a DEAD delivery can be redriven (current state: ${delivery.state})`,
           );
@@ -108,34 +94,25 @@ export class RedriveService {
 
         const now = this.clock.now();
         const cycle = delivery.cycle + 1;
-        await client.query(
-          `UPDATE deliveries
-              SET state = 'READY',
-                  cycle = $2,
-                  attempts_in_cycle = 0,
-                  next_attempt_at = $3,
-                  lease_owner = NULL,
-                  lease_expires_at = NULL,
-                  updated_at = $3
-            WHERE id = $1`,
-          [delivery.id, cycle, now],
-        );
+        await this.deliveries.startNewCycle(client, delivery.id, cycle, now);
 
-        await client.query(
-          `INSERT INTO redrive_audit (id, delivery_id, operator, reason, idempotency_key)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [newUuid(), delivery.id, params.operator, params.reason, params.idempotencyKey],
-        );
+        await this.audits.insert(client, {
+          id: newUuid(),
+          deliveryId: delivery.id,
+          operator: params.operator,
+          reason: params.reason,
+          idempotencyKey: params.idempotencyKey,
+        });
 
         return {
           status: 202,
           resourceId: delivery.id,
           body: {
             deliveryId: delivery.id,
-            eventId: delivery.event_id,
+            eventId: delivery.eventId,
             state: DeliveryState.READY,
             cycle,
-            attemptCount: delivery.attempt_count,
+            attemptCount: delivery.attemptCount,
             attemptsInCycle: 0,
             nextAttemptAt: now.toISOString(),
           },

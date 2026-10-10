@@ -4,12 +4,13 @@ import { FakeRandom } from '../../src/common/random';
 import { newUuid } from '../../src/common/ids';
 import { WebhookClient } from '../../src/modules/webhooks/webhook.client';
 import { createWebhookProcessor } from '../../src/worker/processor';
-import { DeliveryQueue } from '../../src/worker/delivery-queue';
-import { RetryPolicy } from '../../src/worker/retry-policy';
+import { PgDeliveryQueue } from '../../src/db/pg-delivery-queue';
+import { RetryPolicy } from '../../src/domain/retry-policy';
 import { DeliveryWorker } from '../../src/worker/delivery-worker';
 import { insertDelivery, RETRY_CONFIG, silentLogger, BASE_MS } from './worker';
 import { SEED, TEST_DATABASE_URL } from './test-env';
 import type { ReceiverApp } from './receiver';
+import { waitUntil } from './wait';
 
 /**
  * End-to-end delivery loop: real worker process logic, real outbound HTTP,
@@ -64,7 +65,7 @@ export interface LoopOptions {
 export interface DeliveryLoop {
   db: Database;
   clock: FakeClock;
-  queue: DeliveryQueue;
+  queue: PgDeliveryQueue;
   policy: RetryPolicy;
   worker: DeliveryWorker;
   endpointId: string;
@@ -83,6 +84,12 @@ export interface DeliveryLoop {
   /** Wait for the nth attempt to carry a recorded outcome (dispatch completed). */
   waitForAttempts(deliveryId: string, count: number, timeoutMs?: number): Promise<AttemptRow[]>;
   waitForState(deliveryId: string, states: string[], timeoutMs?: number): Promise<DeliveryView>;
+  /**
+   * Wait until the worker has completed `polls` more claim passes. Use it to
+   * assert that something did NOT happen: the worker demonstrably looked for work
+   * `polls` times and found none, which a fixed sleep can only hope for.
+   */
+  waitForIdlePolls(polls?: number, timeoutMs?: number): Promise<void>;
   /** Move the shared clock to the delivery's scheduled retry instant. */
   advanceToDue(deliveryId: string): Promise<Date | null>;
 }
@@ -103,7 +110,7 @@ export async function startLoop(receiver: ReceiverApp, opts: LoopOptions = {}): 
     WEBHOOK_MAX_RESPONSE_BYTES: 4_096,
     WEBHOOK_ALLOWED_HOSTS: opts.allowedHosts ?? '',
   });
-  const queue = new DeliveryQueue(db, clock);
+  const queue = new PgDeliveryQueue(db, clock);
   const policy = new RetryPolicy(clock, new FakeRandom([0]), RETRY_CONFIG);
   const worker = new DeliveryWorker({
     queue,
@@ -140,16 +147,7 @@ export async function startLoop(receiver: ReceiverApp, opts: LoopOptions = {}): 
     return rows;
   }
 
-  async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean, what: string, timeoutMs: number): Promise<T> {
-    const deadline = Date.now() + timeoutMs;
-    let last: T | undefined;
-    while (Date.now() < deadline) {
-      last = await read();
-      if (done(last)) return last;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}; last seen: ${JSON.stringify(last)}`);
-  }
+  const poll = waitUntil;
 
   let started = false;
   return {
@@ -212,6 +210,16 @@ export async function startLoop(receiver: ReceiverApp, opts: LoopOptions = {}): 
         (d) => states.includes(d.state),
         `state ${states.join('|')} on ${deliveryId}`,
         timeoutMs,
+      );
+    },
+    async waitForIdlePolls(polls = 3, timeoutMs = 3_000) {
+      const target = worker.pollCount + polls;
+      await waitUntil(
+        () => worker.pollCount,
+        (count) => count >= target,
+        `${polls} more worker poll passes`,
+        timeoutMs,
+        1,
       );
     },
     async advanceToDue(deliveryId) {

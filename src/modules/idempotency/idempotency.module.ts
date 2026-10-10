@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
-import { DATABASE } from '../../api/tokens';
+import { DATABASE } from '../../common/tokens';
 import { IdempotencyService } from './idempotency.service';
+import { IdempotencyRepository } from '../../db/repositories/idempotency.repository';
 import type { Database } from '../../db/pool';
 
 /**
@@ -11,8 +12,9 @@ import type { Database } from '../../db/pool';
   providers: [
     {
       provide: IdempotencyService,
-      useFactory: (db: Database) => new IdempotencyService(db),
-      inject: [DATABASE],
+      useFactory: (db: Database, records: IdempotencyRepository) =>
+        new IdempotencyService(db, records),
+      inject: [DATABASE, IdempotencyRepository],
     },
   ],
   exports: [IdempotencyService],

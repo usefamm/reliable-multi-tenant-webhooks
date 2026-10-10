@@ -17,7 +17,7 @@ import request from 'supertest';
 import { DeliveryState } from '../../src/domain/types';
 import { WebhookClient } from '../../src/modules/webhooks/webhook.client';
 import { createWebhookProcessor } from '../../src/worker/processor';
-import { DeliveryQueue } from '../../src/worker/delivery-queue';
+import { PgDeliveryQueue } from '../../src/db/pg-delivery-queue';
 import { createTestApp } from '../helpers/app';
 import { q, resetDatabase } from '../helpers/db';
 import { startReceiver, type ReceiverApp } from '../helpers/receiver';
@@ -109,7 +109,7 @@ describe('PDF test 6: crash boundaries', () => {
     // Dispatch for real, then stop before the second transaction: this is exactly
     // what a kill -9 between the HTTP call and the completion write looks like to
     // the queue.
-    const queue = new DeliveryQueue(loop.db, receiver.clock);
+    const queue = new PgDeliveryQueue(loop.db, receiver.clock);
     const processor = createWebhookProcessor({
       db: loop.db,
       clock: receiver.clock,
@@ -168,7 +168,7 @@ describe('PDF test 6: crash boundaries', () => {
     // recovery must continue the SAME cycle, not start a fresh attempt budget.
     const loop = await newLoop({ owner: 'worker-mid-cycle' });
     const { deliveryId } = await loop.publish({ payload: { orderId: 'ord_t6' } });
-    const queue = new DeliveryQueue(loop.db, receiver.clock);
+    const queue = new PgDeliveryQueue(loop.db, receiver.clock);
 
     const first = await queue.claimNext('worker-mid-cycle', LEASE_TTL_MS);
     await queue.completeAttempt({

@@ -1,6 +1,6 @@
-import { createQueue, createWorkerStack, insertDelivery, sleep, type WorkerStack } from '../helpers/worker';
+import { createQueue, createWorkerStack, insertDelivery, type WorkerStack } from '../helpers/worker';
 import { q, resetDatabase } from '../helpers/db';
-import type { DeliveryAttemptResult } from '../../src/worker/types';
+import type { DeliveryAttemptResult } from '../../src/domain/attempt';
 
 const SUCCESS: DeliveryAttemptResult = {
   outcome: 'SUCCESS',
@@ -161,6 +161,5 @@ describe('M8 stale worker fencing (PDF test 7)', () => {
       expect(r.state).toBe('IN_FLIGHT');
       expect(Number(r.lease_generation)).toBe(1);
     }
-    await sleep(10);
   });
 });

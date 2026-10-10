@@ -8,6 +8,8 @@ module.exports = {
   globalSetup: '<rootDir>/test/global-setup.ts',
   globalTeardown: '<rootDir>/test/global-teardown.ts',
   testTimeout: 60000,
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/main.ts', '!src/worker/worker-main.ts', '!src/db/seed.ts'],
+  coverageDirectory: 'coverage',
   moduleFileExtensions: ['ts', 'js', 'json'],
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: 'tsconfig.json' }],

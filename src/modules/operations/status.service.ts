@@ -1,5 +1,6 @@
 import type { Database } from '../../db/pool';
 import { DeliveryState } from '../../domain/types';
+import { QueueStatsRepository } from '../../db/repositories/queue-stats.repository';
 
 /**
  * Operational counters, whole-system view (operator only).
@@ -46,28 +47,6 @@ export interface OpsStatus {
   workers: WorkerActivity[];
 }
 
-interface StateCountRow {
-  state: DeliveryState;
-  n: number;
-}
-
-interface OldestPendingRow {
-  id: string;
-  state: DeliveryState;
-  next_attempt_at: Date;
-  overdue_ms: number;
-}
-
-interface LeaseRow {
-  expired_leases: number;
-  snapshot_at: Date;
-}
-
-interface WorkerRow {
-  owner: string;
-  in_flight: number;
-}
-
 /**
  * State -> response field. Listing all five states explicitly means a state that
  * is absent from the table reports 0 instead of disappearing from the response,
@@ -94,71 +73,44 @@ const COUNT_FIELDS: ReadonlyArray<readonly [DeliveryState, keyof DeliveryCounts]
  * the response contract would not change, only how it is computed.
  */
 export class StatusService {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly stats: QueueStatsRepository = new QueueStatsRepository(),
+  ) {}
 
   async snapshot(): Promise<OpsStatus> {
-    return this.db.withTransaction(async (client) => {
-      // One MVCC snapshot for every counter: a delivery that transitions between
-      // two statements must not be counted as both DEAD and READY in one response.
-      await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    // One MVCC snapshot for every counter: a delivery that transitions between
+    // two statements must not be counted as both DEAD and READY in one response.
+    // Sequential, not concurrent: these share ONE connection, and a PoolClient
+    // is a serial protocol channel.
+    return this.db.withTransaction(
+      async (tx) => {
+        const counts = await this.stats.countByState(tx);
+        const oldest = await this.stats.oldestPending(tx);
+        const leases = await this.stats.expiredLeases(tx);
+        const workers = await this.stats.inFlightByOwner(tx);
 
-      // Sequential, not concurrent: these share ONE connection, and a PoolClient
-      // is a serial protocol channel. Each statement is one aggregate or one
-      // bounded read over a predicate the schema indexes on purpose.
-      const counts = await client.query<StateCountRow>(
-        `SELECT state, count(*)::int AS n FROM deliveries GROUP BY state`,
-      );
+        const result: DeliveryCounts = { ready: 0, inFlight: 0, retryWait: 0, delivered: 0, dead: 0 };
+        for (const [state, field] of COUNT_FIELDS) {
+          result[field] = counts.get(state) ?? 0;
+        }
 
-      // Shaped to match deliveries_due_idx (state IN ('READY','RETRY_WAIT') ordered
-      // by next_attempt_at) so the hottest operational question - "what is the
-      // queue stuck on?" - reads the partial index instead of the whole table.
-      const oldest = await client.query<OldestPendingRow>(
-        `SELECT id, state, next_attempt_at,
-                greatest((extract(epoch FROM (now() - next_attempt_at)) * 1000)::double precision, 0)
-                  AS overdue_ms
-           FROM deliveries
-          WHERE state IN ('READY', 'RETRY_WAIT')
-          ORDER BY next_attempt_at
-          LIMIT 1`,
-      );
-
-      const leases = await client.query<LeaseRow>(
-        `SELECT count(*)::int AS expired_leases, now() AS snapshot_at
-           FROM deliveries
-          WHERE state = 'IN_FLIGHT' AND lease_expires_at < now()`,
-      );
-
-      const workers = await client.query<WorkerRow>(
-        `SELECT lease_owner AS owner, count(*)::int AS in_flight
-           FROM deliveries
-          WHERE state = 'IN_FLIGHT' AND lease_owner IS NOT NULL
-          GROUP BY lease_owner
-          ORDER BY lease_owner`,
-      );
-
-      const stateCounts = new Map<string, number>(counts.rows.map((r) => [r.state, r.n]));
-      const result: DeliveryCounts = { ready: 0, inFlight: 0, retryWait: 0, delivered: 0, dead: 0 };
-      for (const [state, field] of COUNT_FIELDS) {
-        result[field] = stateCounts.get(state) ?? 0;
-      }
-
-      const head = oldest.rows[0];
-      const lease = leases.rows[0];
-
-      return {
-        snapshotAt: lease.snapshot_at.toISOString(),
-        counts: result,
-        oldestPending: head
-          ? {
-              deliveryId: head.id,
-              state: head.state,
-              scheduledFor: head.next_attempt_at.toISOString(),
-              overdueMs: Math.round(head.overdue_ms),
-            }
-          : null,
-        expiredLeases: lease.expired_leases,
-        workers: workers.rows.map((w) => ({ owner: w.owner, inFlight: w.in_flight })),
-      };
-    });
+        return {
+          snapshotAt: leases.snapshotAt.toISOString(),
+          counts: result,
+          oldestPending: oldest
+            ? {
+                deliveryId: oldest.id,
+                state: oldest.state,
+                scheduledFor: oldest.nextAttemptAt.toISOString(),
+                overdueMs: Math.round(oldest.overdueMs),
+              }
+            : null,
+          expiredLeases: leases.count,
+          workers,
+        };
+      },
+      { isolation: 'REPEATABLE READ' },
+    );
   }
 }

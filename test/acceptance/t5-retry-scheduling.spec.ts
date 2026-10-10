@@ -129,10 +129,11 @@ describe('PDF test 5: retry scheduling', () => {
     // Kill the worker while the delivery waits, then replace it.
     await loop.worker.stop();
     const replacement = await newLoop({ owner: 'worker-after' });
-    // The replacement must not attempt early: the due gate survived the restart,
-    // so a real-time pause IS the assertion here.
+    // The replacement must not attempt early: the due gate survived the restart.
+    // It is only "not early" if the worker really looked, so wait for several
+    // completed claim passes instead of guessing a wall-clock pause.
     replacement.start();
-    await new Promise((r) => setTimeout(r, 120));
+    await replacement.waitForIdlePolls();
     expect(await replacement.attempts(deliveryId)).toHaveLength(1);
 
     await replacement.advanceToDue(deliveryId);

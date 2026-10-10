@@ -3,7 +3,7 @@ import { Public } from '../modules/auth/auth.guard';
 import { serviceUnavailable } from '../common/errors';
 import type { Database } from '../db/pool';
 import type { Logger } from '../common/logger';
-import { DATABASE, LOGGER } from './tokens';
+import { DATABASE, LOGGER } from '../common/tokens';
 
 /**
  * Readiness probe. Not a pure liveness check: this service has exactly one
@@ -25,7 +25,7 @@ export class HealthController {
   @Get('health')
   async health(): Promise<{ status: 'ok'; uptimeSec: number; database: 'ok' }> {
     try {
-      await this.db.query('SELECT 1');
+      await this.db.ping();
     } catch (err) {
       this.logger.error({ err }, 'health probe: database unreachable');
       throw serviceUnavailable('Service is not ready');

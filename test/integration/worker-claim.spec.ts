@@ -1,4 +1,4 @@
-import { DeliveryQueue } from '../../src/worker/delivery-queue';
+import { PgDeliveryQueue } from '../../src/db/pg-delivery-queue';
 import { Database } from '../../src/db/pool';
 import { FakeClock } from '../../src/common/clock';
 import { q, resetDatabase, testDb } from '../helpers/db';
@@ -6,10 +6,10 @@ import {
   BASE_MS,
   createWorkerStack,
   insertDelivery,
-  sleep,
   type WorkerStack,
 } from '../helpers/worker';
-import type { DeliveryAttemptResult } from '../../src/worker/types';
+import type { DeliveryAttemptResult } from '../../src/domain/attempt';
+import { createGate, waitUntil, yieldTurns } from '../helpers/wait';
 
 const OK: DeliveryAttemptResult = {
   outcome: 'SUCCESS',
@@ -30,7 +30,11 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
   const extraDbs: Database[] = [];
 
   afterEach(async () => {
-    await Promise.all(stacks.splice(0).map((s) => s.db.close()));
+    // Stop workers first: closing a pool under a still-running worker would wait
+    // on its checked-out connections forever. (A no-op for a worker never started.)
+    const done = stacks.splice(0);
+    await Promise.all(done.map((s) => s.worker.stop()));
+    await Promise.all(done.map((s) => s.db.close()));
     await Promise.all(extraDbs.splice(0).map((d) => d.close()));
     await resetDatabase();
   });
@@ -40,11 +44,11 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
     return stack;
   }
 
-  describe('DeliveryQueue.claimNext', () => {
+  describe('PgDeliveryQueue.claimNext', () => {
     it('claims a due delivery, takes a lease, bumps generation, and pre-allocates the attempt', async () => {
       const { deliveryId } = await insertDelivery(testDb, { state: 'READY' });
       const clock = new FakeClock(BASE_MS);
-      const queue = new DeliveryQueue(testDb, clock);
+      const queue = new PgDeliveryQueue(testDb, clock);
 
       const work = await queue.claimNext('worker-a', 30_000);
       expect(work).not.toBeNull();
@@ -82,13 +86,13 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
         state: 'RETRY_WAIT',
         nextAttemptAt: new Date(BASE_MS + 60_000),
       });
-      const queue = new DeliveryQueue(testDb, new FakeClock(BASE_MS));
+      const queue = new PgDeliveryQueue(testDb, new FakeClock(BASE_MS));
       expect(await queue.claimNext('worker-a', 30_000)).toBeNull();
     });
 
     it('does not double-claim: two concurrent claims on one delivery yield one winner', async () => {
       await insertDelivery(testDb, { state: 'READY' });
-      const queue = new DeliveryQueue(testDb, new FakeClock(BASE_MS));
+      const queue = new PgDeliveryQueue(testDb, new FakeClock(BASE_MS));
 
       const [a, b] = await Promise.all([
         queue.claimNext('worker-a', 30_000),
@@ -108,7 +112,7 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
         attemptsInCycle: 1,
         nextAttemptAt: null,
       });
-      const queue = new DeliveryQueue(testDb, new FakeClock(BASE_MS));
+      const queue = new PgDeliveryQueue(testDb, new FakeClock(BASE_MS));
 
       const work = await queue.claimNext('worker-b', 30_000);
       expect(work).not.toBeNull();
@@ -125,7 +129,7 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
         leaseExpiresAt: new Date(BASE_MS + 60_000), // still valid
         nextAttemptAt: null,
       });
-      const queue = new DeliveryQueue(testDb, new FakeClock(BASE_MS));
+      const queue = new PgDeliveryQueue(testDb, new FakeClock(BASE_MS));
       expect(await queue.claimNext('worker-b', 30_000)).toBeNull();
     });
   });
@@ -141,18 +145,15 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
       const stack = track(createWorkerStack(async () => OK, { concurrency: 4 }));
       stack.worker.start();
 
-      // Poll until all six are terminal (bounded wait).
-      const deadline = Date.now() + 3_000;
-      let delivered = 0;
-      while (Date.now() < deadline) {
-        const rows = await q("SELECT id FROM deliveries WHERE state = 'DELIVERED'");
-        delivered = rows.length;
-        if (delivered === ids.length) break;
-        await sleep(20);
-      }
+      // Wait until all six are terminal.
+      const delivered = await waitUntil(
+        () => q("SELECT id FROM deliveries WHERE state = 'DELIVERED'"),
+        (rows) => rows.length === ids.length,
+        'all six deliveries to be DELIVERED',
+      );
       await stack.worker.stop();
 
-      expect(delivered).toBe(ids.length);
+      expect(delivered).toHaveLength(ids.length);
       // Each delivery recorded exactly one successful attempt.
       const attempts = await q(
         "SELECT delivery_id, outcome FROM delivery_attempts WHERE outcome = 'SUCCESS'",
@@ -167,12 +168,15 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
 
       let current = 0;
       let max = 0;
+      // Dispatches stay open until the test releases them, so the overlap is
+      // forced rather than hoped for by sleeping.
+      const release = createGate();
       const stack = track(
         createWorkerStack(
           async () => {
             current += 1;
             max = Math.max(max, current);
-            await sleep(40);
+            await release.promise;
             current -= 1;
             return OK;
           },
@@ -181,16 +185,24 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
       );
 
       stack.worker.start();
-      const deadline = Date.now() + 4_000;
-      while (Date.now() < deadline) {
-        const rows = await q("SELECT id FROM deliveries WHERE state = 'DELIVERED'");
-        if (rows.length === 12) break;
-        await sleep(20);
-      }
+      await waitUntil(() => current, (n) => n >= 4, 'four dispatches in flight');
+      // Eight deliveries are still due and the worker keeps polling while full;
+      // give it several passes in which an unbounded worker would over-claim.
+      const polls = stack.worker.pollCount;
+      await waitUntil(() => stack.worker.pollCount, (n) => n >= polls + 5, 'five saturated polls');
+      expect(current).toBe(4);
+      expect(max).toBe(4);
+
+      release.release();
+      await waitUntil(
+        () => q("SELECT id FROM deliveries WHERE state = 'DELIVERED'"),
+        (rows) => rows.length === 12,
+        'all twelve deliveries to be DELIVERED',
+        4_000,
+      );
       await stack.worker.stop();
 
-      expect(max).toBeLessThanOrEqual(4); // hard bound
-      expect(max).toBeGreaterThanOrEqual(2); // proves real overlap happened
+      expect(max).toBe(4); // hard bound, and genuinely reached
       expect(current).toBe(0);
     });
 
@@ -200,26 +212,34 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
       }
 
       let started = 0;
+      const finishDispatch = createGate();
       const stack = track(
         createWorkerStack(
           async () => {
             started += 1;
-            await sleep(50);
+            await finishDispatch.promise;
             return OK;
           },
-          { concurrency: 4, claimBatchSize: 4 },
+          { concurrency: 2, claimBatchSize: 2 },
         ),
       );
 
       stack.worker.start();
-      await sleep(30); // let it claim and begin dispatch
-      await stack.worker.stop();
+      await waitUntil(() => started, (n) => n >= 2, 'two dispatches to begin');
 
-      // After stop, nothing is in flight and no new claims occur.
+      // Stop while both dispatches are still open, then let them finish: stop()
+      // must wait for them (drain) rather than abandon them.
+      const stopping = stack.worker.stop();
+      finishDispatch.release();
+      await stopping;
+
+      // Nothing is in flight, and the two undone deliveries were never claimed.
       expect(stack.worker.inFlightCount).toBe(0);
-      const before = started;
-      await sleep(80);
-      expect(started).toBe(before); // no further dispatches after shutdown
+      expect(started).toBe(2);
+      const afterStop = stack.worker.pollCount;
+      await yieldTurns();
+      expect(stack.worker.pollCount).toBe(afterStop); // the poll loop is really gone
+      expect(await q("SELECT id FROM deliveries WHERE state = 'READY'")).toHaveLength(2);
     });
   });
 
@@ -227,7 +247,7 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
     it('applies the state transition when the lease still matches', async () => {
       const { deliveryId } = await insertDelivery(testDb, { state: 'READY' });
       const clock = new FakeClock(BASE_MS);
-      const queue = new DeliveryQueue(testDb, clock);
+      const queue = new PgDeliveryQueue(testDb, clock);
       const work = (await queue.claimNext('worker-a', 30_000))!;
 
       const res = await queue.completeAttempt({
@@ -257,7 +277,7 @@ describe('M7 worker claim loop + leases + bounded concurrency', () => {
     it('is fenced out when another worker has advanced the lease generation', async () => {
       const { deliveryId } = await insertDelivery(testDb, { state: 'READY' });
       const clock = new FakeClock(BASE_MS);
-      const queue = new DeliveryQueue(testDb, clock);
+      const queue = new PgDeliveryQueue(testDb, clock);
 
       // Worker A claims (generation 1).
       const a = (await queue.claimNext('worker-a', 30_000))!;

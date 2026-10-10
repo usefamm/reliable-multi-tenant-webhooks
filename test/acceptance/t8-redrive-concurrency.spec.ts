@@ -179,7 +179,7 @@ describe('PDF test 8: redrive concurrency', () => {
     expect(await q('SELECT 1 FROM redrive_audit')).toEqual([]);
 
     // Nothing was re-queued, so nothing was re-sent: still one request, one effect.
-    await new Promise((r) => setTimeout(r, 120));
+    await loop.waitForIdlePolls();
     expect(await receiver.repo.listRequests(loop.endpointId)).toHaveLength(1);
     expect(await receiver.repo.listEffects(loop.endpointId)).toHaveLength(1);
     expect(await loop.attempts(deliveryId)).toHaveLength(1);

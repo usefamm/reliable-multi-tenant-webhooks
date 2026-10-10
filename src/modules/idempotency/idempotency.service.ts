@@ -4,6 +4,12 @@ import { newUuid } from '../../common/ids';
 import { conflict } from '../../common/errors';
 import { canonicalJson } from '../../common/canonical-json';
 import { sha256Hex } from '../../common/hash';
+import {
+  IdempotencyRepository,
+  isIdempotencyKeyConflict,
+  type IdempotencyRecord,
+  type IdempotencyScope,
+} from '../../db/repositories/idempotency.repository';
 
 /** Idempotency operations. Keys are scoped by (tenant, operation, key). */
 export const IdempotencyOperation = {
@@ -25,23 +31,6 @@ export interface IdempotentOutcome<T> {
   body: T;
   /** True when the response was replayed from a previously committed record. */
   replayed: boolean;
-}
-
-interface IdempotencyRow {
-  request_hash: string;
-  response_status: number;
-  response_body: unknown;
-  resource_id: string | null;
-}
-
-/** Postgres unique_violation SQLSTATE. */
-const UNIQUE_VIOLATION = '23505';
-/** Name of the UNIQUE constraint on idempotency_records (see migration 001). */
-const IDEMPOTENCY_CONSTRAINT = 'idempotency_unique';
-
-interface PgError extends Error {
-  code?: string;
-  constraint?: string;
 }
 
 /**
@@ -67,7 +56,10 @@ export function requestFingerprint(input: unknown): string {
  * key.
  */
 export class IdempotencyService {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly records: IdempotencyRepository = new IdempotencyRepository(),
+  ) {}
 
   async execute<T>(
     params: {
@@ -78,93 +70,57 @@ export class IdempotencyService {
     },
     work: (client: PoolClient) => Promise<IdempotentWorkResult<T>>,
   ): Promise<IdempotentOutcome<T>> {
+    const scope: IdempotencyScope = {
+      tenantId: params.tenantId,
+      operation: params.operation,
+      key: params.key,
+    };
+
     try {
       return await this.db.withTransaction(async (client) => {
-        const existing = await this.selectRecord(client, params);
+        const existing = await this.records.find(client, scope);
         if (existing) {
           return this.replayOrConflict<T>(existing, params.requestHash);
         }
 
         // Claim the key BEFORE doing the work. A concurrent request with the
         // same key blocks on the unique index here and, once the winner commits,
-        // takes the 23505 path below and replays - instead of racing to redo the
-        // work and then failing a state precondition that the winner already
-        // consumed (which would surface as a spurious 409).
+        // takes the unique-violation path below and replays - instead of racing
+        // to redo the work and then failing a state precondition that the winner
+        // already consumed (which would surface as a spurious 409).
         const recordId = newUuid();
-        await this.claimRecord(client, recordId, params);
+        await this.records.claim(client, recordId, scope, params.requestHash);
 
         const result = await work(client);
 
-        await this.finalizeRecord(client, recordId, result);
+        await this.records.finalize(client, recordId, {
+          status: result.status,
+          body: result.body,
+          resourceId: result.resourceId ?? null,
+        });
         return { status: result.status, body: result.body, replayed: false };
       });
     } catch (err) {
-      if (this.isIdempotencyConflict(err)) {
+      if (isIdempotencyKeyConflict(err)) {
         // A concurrent request committed the record first. Re-read and replay.
-        return this.replayAfterConflict<T>(params);
+        return this.replayAfterConflict<T>(scope, params.requestHash);
       }
       throw err;
     }
   }
 
-  private async selectRecord(
-    client: PoolClient,
-    params: { tenantId: string; operation: string; key: string },
-  ): Promise<IdempotencyRow | undefined> {
-    const { rows } = await client.query<IdempotencyRow>(
-      `SELECT request_hash, response_status, response_body, resource_id
-         FROM idempotency_records
-        WHERE tenant_id = $1 AND operation = $2 AND idempotency_key = $3`,
-      [params.tenantId, params.operation, params.key],
-    );
-    return rows[0];
-  }
-
-  /**
-   * Write the key claim. `response_status`/`response_body` are NOT NULL, so the
-   * claim carries placeholders that `finalizeRecord` overwrites in the same
-   * transaction: no other session can observe them, because the row is invisible
-   * until this transaction commits.
-   */
-  private async claimRecord(
-    client: PoolClient,
-    recordId: string,
-    params: { tenantId: string; operation: string; key: string; requestHash: string },
-  ): Promise<void> {
-    await client.query(
-      `INSERT INTO idempotency_records
-         (id, tenant_id, operation, idempotency_key, request_hash,
-          response_status, response_body, resource_id)
-       VALUES ($1, $2, $3, $4, $5, 0, 'null'::jsonb, NULL)`,
-      [recordId, params.tenantId, params.operation, params.key, params.requestHash],
-    );
-  }
-
-  private async finalizeRecord<T>(
-    client: PoolClient,
-    recordId: string,
-    result: IdempotentWorkResult<T>,
-  ): Promise<void> {
-    await client.query(
-      `UPDATE idempotency_records
-          SET response_status = $2, response_body = $3, resource_id = $4
-        WHERE id = $1`,
-      [recordId, result.status, JSON.stringify(result.body), result.resourceId ?? null],
-    );
-  }
-
   private replayOrConflict<T>(
-    existing: IdempotencyRow,
+    existing: IdempotencyRecord,
     requestHash: string,
   ): IdempotentOutcome<T> {
-    if (existing.request_hash !== requestHash) {
+    if (existing.requestHash !== requestHash) {
       throw conflict(
         'Idempotency-Key was reused with different input; the original response cannot be replayed',
       );
     }
     return {
-      status: existing.response_status,
-      body: existing.response_body as T,
+      status: existing.responseStatus,
+      body: existing.responseBody as T,
       replayed: true,
     };
   }
@@ -174,31 +130,18 @@ export class IdempotencyService {
    * violation is only raised once the winning transaction commits, so the record
    * is visible here; a short retry guards against rare visibility timing.
    */
-  private async replayAfterConflict<T>(params: {
-    tenantId: string;
-    operation: string;
-    key: string;
-    requestHash: string;
-  }): Promise<IdempotentOutcome<T>> {
+  private async replayAfterConflict<T>(
+    scope: IdempotencyScope,
+    requestHash: string,
+  ): Promise<IdempotentOutcome<T>> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const { rows } = await this.db.query<IdempotencyRow>(
-        `SELECT request_hash, response_status, response_body, resource_id
-           FROM idempotency_records
-          WHERE tenant_id = $1 AND operation = $2 AND idempotency_key = $3`,
-        [params.tenantId, params.operation, params.key],
-      );
-      const existing = rows[0];
+      const existing = await this.records.find(this.db, scope);
       if (existing) {
-        return this.replayOrConflict<T>(existing, params.requestHash);
+        return this.replayOrConflict<T>(existing, requestHash);
       }
       await new Promise((r) => setTimeout(r, 10 * (attempt + 1)));
     }
     // The conflicting transaction must have rolled back; surface a conflict.
     throw conflict('Concurrent request with the same Idempotency-Key could not be reconciled');
-  }
-
-  private isIdempotencyConflict(err: unknown): boolean {
-    const e = err as PgError;
-    return e?.code === UNIQUE_VIOLATION && e?.constraint === IDEMPOTENCY_CONSTRAINT;
   }
 }

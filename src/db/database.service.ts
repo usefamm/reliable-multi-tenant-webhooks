@@ -1,5 +1,5 @@
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import { DATABASE } from '../api/tokens';
+import { DATABASE } from '../common/tokens';
 import type { Database } from './pool';
 
 /**

@@ -3,10 +3,10 @@ import { FakeClock } from '../../src/common/clock';
 import { FakeRandom } from '../../src/common/random';
 import { newUuid } from '../../src/common/ids';
 import { buildEnvelope } from '../../src/modules/webhooks/envelope';
-import { DeliveryQueue } from '../../src/worker/delivery-queue';
-import { RetryPolicy } from '../../src/worker/retry-policy';
+import { PgDeliveryQueue } from '../../src/db/pg-delivery-queue';
+import { RetryPolicy } from '../../src/domain/retry-policy';
 import { DeliveryWorker } from '../../src/worker/delivery-worker';
-import type { DeliveryProcessor } from '../../src/worker/types';
+import type { DeliveryProcessor } from '../../src/domain/attempt';
 import type { Logger } from '../../src/common/logger';
 import { SEED, TEST_DATABASE_URL } from './test-env';
 
@@ -104,18 +104,18 @@ export async function insertDelivery(
 export interface WorkerStack {
   db: Database;
   clock: FakeClock;
-  queue: DeliveryQueue;
+  queue: PgDeliveryQueue;
   policy: RetryPolicy;
   worker: DeliveryWorker;
 }
 
 /**
- * Build a DeliveryQueue bound to the same Database and FakeClock as a stack, so
+ * Build a PgDeliveryQueue bound to the same Database and FakeClock as a stack, so
  * tests can simulate several independent workers sharing the durable queue and
  * control lease timing deterministically.
  */
-export function createQueue(stack: WorkerStack): DeliveryQueue {
-  return new DeliveryQueue(stack.db, stack.clock);
+export function createQueue(stack: WorkerStack): PgDeliveryQueue {
+  return new PgDeliveryQueue(stack.db, stack.clock);
 }
 
 /**
@@ -136,7 +136,7 @@ export function createWorkerStack(
   const db = new Database(TEST_DATABASE_URL);
   const clock = new FakeClock(BASE_MS);
   const random = new FakeRandom([0]); // zero jitter by default for determinism
-  const queue = new DeliveryQueue(db, clock);
+  const queue = new PgDeliveryQueue(db, clock);
   const policy = new RetryPolicy(clock, random, RETRY_CONFIG);
   const worker = new DeliveryWorker({
     queue,
@@ -151,8 +151,4 @@ export function createWorkerStack(
     shutdownGraceMs: overrides.shutdownGraceMs ?? 1_000,
   });
   return { db, clock, queue, policy, worker };
-}
-
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

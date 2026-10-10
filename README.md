@@ -386,17 +386,22 @@ See the full setup instructions and example requests in the repository documenta
 
 ```text
 src/
-  api/          HTTP API
-  domain/       domain models and rules
-  application/  use cases
-  infrastructure/
-                PostgreSQL and HTTP implementations
-  workers/      delivery workers
-  receiver/     mock webhook receiver
+  api/          HTTP bootstrap: Nest app/core modules, exception filter, health
+  common/       clock, random, ids, errors, logger, DI tokens
+  config/       environment parsing
+  domain/       framework-free rules: delivery state machine, retry policy,
+                attempt types, and the WorkQueue port
+  db/           the only place SQL lives (plus the receiver's own repository)
+    repositories/   one repository per table group; callers pass the executor,
+                    so the service decides the transaction boundary
+    pg-delivery-queue.ts   PostgreSQL implementation of the WorkQueue port
+  modules/      application services + controllers (auth, events, deliveries,
+                idempotency, operations) and the outbound webhook client
+  worker/       delivery worker loop, processor, worker process bootstrap
+  receiver/     mock webhook receiver (independent node:http process)
 
 migrations/     database migrations
-seed/           development data
-test/           integration and acceptance tests
+test/           unit / integration / acceptance (T1-T9) tests
 docs/
   DESIGN.md
   IMPLEMENTATION_PLAN.md

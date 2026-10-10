@@ -2,7 +2,7 @@ import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from '../../src/api/app.module';
-import { CLOCK, DATABASE, LOGGER } from '../../src/api/tokens';
+import { CLOCK, DATABASE, LOGGER } from '../../src/common/tokens';
 import { configureHttp } from '../../src/api/http-setup';
 import type { Clock } from '../../src/common/clock';
 import type { Logger } from '../../src/common/logger';

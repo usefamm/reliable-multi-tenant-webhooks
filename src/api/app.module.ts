@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { CoreModule } from './core.module';
+import { PersistenceModule } from '../db/persistence.module';
 import { AuthModule } from '../modules/auth/auth.module';
 import { EventsModule } from '../modules/events/events.module';
 import { DeliveriesModule } from '../modules/deliveries/deliveries.module';
@@ -15,7 +16,7 @@ import { AllExceptionsFilter } from './exception.filter';
  * applied in http-setup (see configureHttp/finalizeHttp) so they wrap the router.
  */
 @Module({
-  imports: [CoreModule, AuthModule, EventsModule, DeliveriesModule, OperationsModule],
+  imports: [CoreModule, PersistenceModule, AuthModule, EventsModule, DeliveriesModule, OperationsModule],
   controllers: [HealthController],
   providers: [{ provide: APP_FILTER, useClass: AllExceptionsFilter }],
 })

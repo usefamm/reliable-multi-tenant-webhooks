@@ -8,12 +8,12 @@ import { Database } from '../../src/db/pool';
 import { FakeClock } from '../../src/common/clock';
 import { FakeRandom } from '../../src/common/random';
 import { newUuid } from '../../src/common/ids';
-import { DeliveryQueue } from '../../src/worker/delivery-queue';
-import { RetryPolicy } from '../../src/worker/retry-policy';
+import { PgDeliveryQueue } from '../../src/db/pg-delivery-queue';
+import { RetryPolicy } from '../../src/domain/retry-policy';
 import { TEST_DATABASE_URL, SEED } from '../helpers/test-env';
 import { insertDelivery } from '../helpers/worker';
 import { q, resetDatabase } from '../helpers/db';
-import type { ClaimedWork } from '../../src/worker/types';
+import type { ClaimedWork } from '../../src/domain/attempt';
 
 const CLIENT_CONFIG = {
   WEBHOOK_TIMEOUT_MS: 300,
@@ -281,7 +281,7 @@ describe('M9 outbound webhook client', () => {
         [endpointId, SEED.tenantAId, 'test-hook', `${baseUrl}/hook/${endpointId}`, SECRET],
       );
       await insertDelivery(db, { endpointId });
-      const queue = new DeliveryQueue(db, new FakeClock(Date.UTC(2026, 0, 1)));
+      const queue = new PgDeliveryQueue(db, new FakeClock(Date.UTC(2026, 0, 1)));
       return { work: (await queue.claimNext('worker-test', 30_000))!, endpointId };
     }
 
@@ -327,7 +327,7 @@ describe('M9 outbound webhook client', () => {
         RETRY_AFTER_CAP_MS: 60000,
       });
       const decision = policy.decide(work, result);
-      const queue = new DeliveryQueue(db, clock);
+      const queue = new PgDeliveryQueue(db, clock);
       const done = await queue.completeAttempt({
         deliveryId: work.deliveryId,
         attemptRowId: work.attemptRowId,
@@ -414,7 +414,7 @@ describe('M9 outbound webhook client', () => {
         RETRY_AFTER_CAP_MS: 60000,
       });
       const decision = policy.decide(work, result);
-      const queue = new DeliveryQueue(db, clock);
+      const queue = new PgDeliveryQueue(db, clock);
       const done = await queue.completeAttempt({
         deliveryId: work.deliveryId,
         attemptRowId: work.attemptRowId,

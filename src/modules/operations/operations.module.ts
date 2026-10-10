@@ -1,11 +1,14 @@
 import { Module } from '@nestjs/common';
-import { CLOCK, DATABASE } from '../../api/tokens';
+import { CLOCK, DATABASE } from '../../common/tokens';
 import { OperationsController } from './operations.controller';
 import { RedriveService } from './redrive.service';
 import { StatusController } from './status.controller';
 import { StatusService } from './status.service';
 import { IdempotencyModule } from '../idempotency/idempotency.module';
 import { IdempotencyService } from '../idempotency/idempotency.service';
+import { DeliveryRepository } from '../../db/repositories/delivery.repository';
+import { QueueStatsRepository } from '../../db/repositories/queue-stats.repository';
+import { RedriveAuditRepository } from '../../db/repositories/redrive-audit.repository';
 import type { Database } from '../../db/pool';
 import type { Clock } from '../../common/clock';
 
@@ -20,14 +23,19 @@ import type { Clock } from '../../common/clock';
   providers: [
     {
       provide: RedriveService,
-      useFactory: (db: Database, clock: Clock, idempotency: IdempotencyService) =>
-        new RedriveService(db, clock, idempotency),
-      inject: [DATABASE, CLOCK, IdempotencyService],
+      useFactory: (
+        db: Database,
+        clock: Clock,
+        idempotency: IdempotencyService,
+        deliveries: DeliveryRepository,
+        audits: RedriveAuditRepository,
+      ) => new RedriveService(db, clock, idempotency, deliveries, audits),
+      inject: [DATABASE, CLOCK, IdempotencyService, DeliveryRepository, RedriveAuditRepository],
     },
     {
       provide: StatusService,
-      useFactory: (db: Database) => new StatusService(db),
-      inject: [DATABASE],
+      useFactory: (db: Database, stats: QueueStatsRepository) => new StatusService(db, stats),
+      inject: [DATABASE, QueueStatsRepository],
     },
   ],
   exports: [RedriveService, StatusService],

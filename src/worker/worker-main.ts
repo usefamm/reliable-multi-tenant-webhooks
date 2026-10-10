@@ -9,8 +9,8 @@ import { SystemRandom } from '../common/random';
 import { createLogger } from '../common/logger';
 import { loadConfig } from '../config/env';
 import { WebhookClient } from '../modules/webhooks/webhook.client';
-import { DeliveryQueue } from './delivery-queue';
-import { RetryPolicy } from './retry-policy';
+import { PgDeliveryQueue } from '../db/pg-delivery-queue';
+import { RetryPolicy } from '../domain/retry-policy';
 import { DeliveryWorker } from './delivery-worker';
 import { createWebhookProcessor } from './processor';
 
@@ -28,7 +28,7 @@ async function bootstrap(): Promise<void> {
   const logger = createLogger(config, config.WORKER_NAME);
   const db = Database.fromConfig(config);
 
-  const queue = new DeliveryQueue(db, new SystemClock());
+  const queue = new PgDeliveryQueue(db, new SystemClock());
   const policy = new RetryPolicy(new SystemClock(), new SystemRandom(), config);
   const processor = createWebhookProcessor({
     db,

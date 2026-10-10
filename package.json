@@ -19,6 +19,7 @@
     "migrate:down": "ts-node src/db/migrate.ts down",
     "seed": "ts-node src/db/seed.ts",
     "test": "jest --runInBand",
+    "test:coverage": "jest --runInBand --coverage",
     "test:unit": "jest --runInBand --testPathPattern test/unit",
     "test:integration": "jest --runInBand --testPathPattern test/integration",
     "test:acceptance": "jest --runInBand --testPathPattern test/acceptance"

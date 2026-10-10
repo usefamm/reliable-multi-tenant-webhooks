@@ -15,7 +15,7 @@ import request from 'supertest';
 import { DeliveryState, MAX_ENVELOPE_BYTES } from '../../src/domain/types';
 import { WebhookClient } from '../../src/modules/webhooks/webhook.client';
 import { createWebhookProcessor } from '../../src/worker/processor';
-import { DeliveryQueue } from '../../src/worker/delivery-queue';
+import { PgDeliveryQueue } from '../../src/db/pg-delivery-queue';
 import { createTestApp } from '../helpers/app';
 import { q, resetDatabase } from '../helpers/db';
 import { payloadForEnvelopeSize } from '../helpers/envelope-size';
@@ -24,6 +24,7 @@ import { startLoop, type DeliveryLoop, type LoopOptions } from '../helpers/deliv
 import { startCaptureEndpoint, type CaptureEndpoint } from '../helpers/capture-endpoint';
 import { BASE_MS } from '../helpers/worker';
 import { SEED, TEST_DATABASE_URL, TEST_TOKENS } from '../helpers/test-env';
+import { createGate, waitUntil } from '../helpers/wait';
 
 const TRIGGERS = [
   { fn: 'inject_delivery_write_failure', trigger: 'inject_delivery_write_failure' },
@@ -73,9 +74,11 @@ describe('PDF test 9: bounds and rollback', () => {
   }
 
   it('never lets one worker exceed its configured outbound concurrency', async () => {
-    // Every request is held open for 120ms, so a worker with 4 permits can only
-    // ever have 4 in flight. The destination counts what it actually sees.
-    const capture = await newCapture(() => ({ status: 200, body: '{"ok":true}', delayMs: 120 }));
+    // Requests are held open until the test releases them, so a worker with 4
+    // permits can only ever have 4 in flight. The destination counts what it
+    // actually sees.
+    const release = createGate();
+    const capture = await newCapture(() => ({ status: 200, body: '{"ok":true}', hold: release.promise }));
     const loop = await newLoop({ owner: 'worker-bounded', concurrency: 4, destinationUrl: capture.url('/hook') });
 
     const ids: string[] = [];
@@ -83,19 +86,34 @@ describe('PDF test 9: bounds and rollback', () => {
       ids.push((await loop.publish({ payload: { orderId: `ord_bounded_${i}` } })).deliveryId);
     }
     loop.start();
+
+    // Saturate: all four permits are in use and 8 deliveries are still due.
+    await waitUntil(
+      () => capture.maxConcurrent(),
+      (peak) => peak >= 4,
+      'four concurrent requests to reach the destination',
+    );
+    // The worker keeps polling while saturated. A worker that ignored its bound
+    // would claim and dispatch a fifth request on one of these passes.
+    await loop.waitForIdlePolls(5);
+    expect(capture.maxConcurrent()).toBe(4);
+
+    release.release();
     for (const id of ids) await loop.waitForState(id, [DeliveryState.DELIVERED]);
 
     expect(capture.requests).toHaveLength(12);
-    expect(capture.maxConcurrent()).toBeLessThanOrEqual(4);
-    // ...and the bound was genuinely contended, otherwise the assertion is empty.
-    expect(capture.maxConcurrent()).toBeGreaterThan(1);
+    expect(capture.maxConcurrent()).toBe(4);
 
     for (const id of ids) expect(await loop.attempts(id)).toHaveLength(1);
     expect(await receiver.repo.listEffects(loop.endpointId)).toHaveLength(0);
   });
 
   it('gives up on a stalled destination inside the configured timeout, then recovers', async () => {
-    const capture = await newCapture(() => ({ status: 200, body: '{"ok":true}', delayMs: 1_500 }));
+    // The destination is silent until the test releases it: no timer decides how
+    // long it "stalls", so the only thing that can end attempt 1 is the client's
+    // own deadline.
+    const stall = createGate();
+    const capture = await newCapture(() => ({ status: 200, body: '{"ok":true}', hold: stall.promise }));
     const loop = await newLoop({
       owner: 'worker-timed-out',
       timeoutMs: 150,
@@ -103,21 +121,20 @@ describe('PDF test 9: bounds and rollback', () => {
     });
     const { deliveryId } = await loop.publish();
 
-    const startedAt = Date.now();
     loop.start();
     const first = await loop.waitForAttempts(deliveryId, 1);
-    const elapsed = Date.now() - startedAt;
 
     expect(first[0]).toMatchObject({ outcome: 'RETRYABLE', error_code: 'timeout', http_status: null });
-    // The client abandoned the call at its own deadline instead of waiting 1.5s
-    // for a reply it could not use. Generous ceiling: this proves the bound, not
-    // the exact millisecond.
-    expect(elapsed).toBeLessThan(1_000);
+    // The attempt ended while the destination had still not answered: the client
+    // abandoned the call at its own deadline rather than waiting for a reply.
+    expect(stall.released).toBe(false);
+    expect(capture.requests).toHaveLength(1);
     expect((await loop.delivery(deliveryId)).state).toBe(DeliveryState.RETRY_WAIT);
 
     // A timeout is uncertainty, not a failure: once the destination answers
     // promptly the retry delivers, and the late reply changed nothing.
     capture.setResponder(() => ({ status: 200, body: '{"ok":true}' }));
+    stall.release(); // the abandoned request's late reply goes nowhere
     await loop.advanceToDue(deliveryId);
     const done = await loop.waitForState(deliveryId, [DeliveryState.DELIVERED]);
     expect(done).toMatchObject({ state: DeliveryState.DELIVERED, attempt_count: 2 });
@@ -271,7 +288,7 @@ describe('PDF test 9: bounds and rollback', () => {
     const loop = await newLoop({ owner: 'worker-rollback' });
     const { deliveryId } = await loop.publish({ payload: { orderId: 'ord_t9', __injectFailure: true } });
 
-    const queue = new DeliveryQueue(loop.db, receiver.clock);
+    const queue = new PgDeliveryQueue(loop.db, receiver.clock);
     const processor = createWebhookProcessor({
       db: loop.db,
       clock: receiver.clock,

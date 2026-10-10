@@ -1,14 +1,10 @@
 import type { Database } from '../db/pool';
+import { EndpointRepository } from '../db/repositories/endpoint.repository';
 import type { Clock } from '../common/clock';
 import { truncateToBytes } from '../common/bytes';
 import { DestinationNotAllowedError, WebhookClient } from '../modules/webhooks/webhook.client';
 import type { WebhookEnvelope } from '../domain/types';
-import type { ClaimedWork, DeliveryAttemptResult, DeliveryProcessor } from './types';
-
-interface EndpointTarget {
-  url: string;
-  secret: string;
-}
+import type { ClaimedWork, DeliveryAttemptResult, DeliveryProcessor } from '../domain/attempt';
 
 /**
  * Build the worker's delivery processor.
@@ -26,13 +22,11 @@ export function createWebhookProcessor(deps: {
   db: Database;
   clock: Clock;
   client: WebhookClient;
+  endpoints?: EndpointRepository;
 }): DeliveryProcessor {
+  const endpoints = deps.endpoints ?? new EndpointRepository();
   return async (work: ClaimedWork): Promise<DeliveryAttemptResult> => {
-    const { rows } = await deps.db.query<EndpointTarget>(
-      'SELECT url, secret FROM endpoints WHERE id = $1 AND tenant_id = $2',
-      [work.endpointId, work.tenantId],
-    );
-    const target = rows[0];
+    const target = await endpoints.findDispatchTarget(deps.db, work.endpointId, work.tenantId);
     if (!target) {
       // Endpoint vanished - nothing to deliver to. Not retryable by policy.
       return {

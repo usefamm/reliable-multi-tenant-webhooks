@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
-import { DATABASE } from '../../api/tokens';
+import { DATABASE } from '../../common/tokens';
 import { DeliveriesService } from './deliveries.service';
 import { DeliveriesController } from './deliveries.controller';
+import { DeliveryRepository } from '../../db/repositories/delivery.repository';
 import type { Database } from '../../db/pool';
 
 /** Deliveries feature module: tenant-scoped listing endpoint. */
@@ -10,8 +11,9 @@ import type { Database } from '../../db/pool';
   providers: [
     {
       provide: DeliveriesService,
-      useFactory: (db: Database) => new DeliveriesService(db),
-      inject: [DATABASE],
+      useFactory: (db: Database, deliveries: DeliveryRepository) =>
+        new DeliveriesService(db, deliveries),
+      inject: [DATABASE, DeliveryRepository],
     },
   ],
   exports: [DeliveriesService],
